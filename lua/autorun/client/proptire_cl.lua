@@ -4,6 +4,9 @@ local RATE = 0.05
 local SCAN = 1
 local MAX_DIST = 4000
 local REST = 0.5
+local SILENT_STOP = 1
+local SKID_FADE = 0.15
+local CONTACT_HOLD = 0.2
 
 local ROLL_FROM, ROLL_FULL = 150, 900
 local SLOW_FROM, SLOW_FADE, SLOW_OFF = 20, 300, 700
@@ -145,6 +148,35 @@ local PROPER = {
 	other   = { roll = "roll_asphalt", skid = "skid_asphalt", vol = 0.7, pitch = 1 },
 }
 
+local function SetSoundsFor(set, g)
+	if set == "ace" then
+		local p = ACE_SND[g.id] or ACE_SND.other
+		return ACE .. p.roll .. ".wav", p.skid and (ACE .. p.skid .. ".wav") or "", p.vol
+	elseif set == "glide" then
+		local p = GLIDE_SND[g.id] or GLIDE_SND.other
+		local roll = p.roll or p.slow
+		return roll and (GLIDE_WAV .. roll .. ".wav") or "", p.skid and (GLIDE_WAV .. p.skid .. ".wav") or "", p.vol
+	elseif set == "simfphys" then
+		local grass = g.id == "grass" or g.id == "snow"
+		local soft = g.id == "dirt" or g.id == "sand"
+		local kind = grass and "grass" or soft and "dirt" or "concrete"
+		return SIMF .. kind .. "_roll.wav", SIMF .. kind .. "_skid.wav", (grass or soft) and 0.9 or 0.8
+	elseif set == "hl2" then
+		local mat = g.mats[1] or MAT_DEFAULT
+		return HL2.ROLL[mat] or "", HL2.SIDE_SLIP[mat] or HL2.SIDE_SLIP[MAT_DEFAULT] or "", 0.8
+	end
+end
+
+function PropTire.SetSoundPaths(set)
+	local out = {}
+	for _, g in ipairs(PropTire.SURFACES) do
+		local roll, skid, vol = SetSoundsFor(set, g)
+		if not roll then return nil end
+		out[g.id] = { roll = roll, skid = skid, vol = vol }
+	end
+	return out
+end
+
 local MARK_SKID_COLOR = { 18, 18, 18 }
 local MARK_ROLL_COLOR = { dirt = { 62, 48, 34 }, sand = { 120, 104, 78 }, grass = { 46, 50, 30 }, snow = { 140, 146, 158 } }
 
@@ -184,7 +216,7 @@ end
 
 local function StopSounds(C)
 	for _, snd in pairs(C.snd) do snd:Stop() end
-	C.snd, C.path, C.vol, C.pit = {}, {}, {}, {}
+	C.snd, C.path, C.vol, C.pit, C.quiet = {}, {}, {}, {}, {}
 end
 
 local function StopDust(ent, C)
@@ -199,16 +231,30 @@ local function StopAll(ent, C)
 end
 
 local function Layer(ent, C, key, path, vol, pitch)
+	C.quiet = C.quiet or {}
 	local snd = C.snd[key]
 	if snd and C.path[key] ~= path then
 		snd:Stop()
 		snd = nil
 		C.snd[key] = nil
+		C.quiet[key] = nil
 	end
-	if not path or vol < 0.01 then
-		if snd and snd:IsPlaying() then snd:Stop() end
+	if not path then return end
+	if vol < 0.01 then
+		if snd and snd:IsPlaying() then
+			local now = RealTime()
+			if not C.quiet[key] then
+				C.quiet[key] = now
+				snd:ChangeVolume(0, RATE)
+				C.vol[key] = 0
+			elseif now - C.quiet[key] > SILENT_STOP then
+				snd:Stop()
+				C.quiet[key] = nil
+			end
+		end
 		return
 	end
+	C.quiet[key] = nil
 	if not snd then
 		snd = CreateSound(ent, path)
 		snd:SetSoundLevel(80)
@@ -388,6 +434,7 @@ end
 local function Rest(ent, C, dt)
 	if next(C.snd) or C.dustOn then StopAll(ent, C) end
 	C.skidId, C.rollId, C.pmSkid, C.pmRoll = nil, nil, nil, nil
+	C.skidS = 0
 	if C.heat then C.heat = max(C.heat - HEAT_DOWN * dt, 0) end
 end
 
@@ -410,31 +457,45 @@ local function UpdateTire(ent, C, fx, dt)
 	local contact = tr.Hit and (pos - tr.HitPos):Dot(tr.HitNormal) <= r + 4
 	local s = contact and PropTire.TraceMat(tr) or 0
 	local speed = contact and vel:Length() or 0
-	local skid = contact and skidNW or 0
 	if speed > 20 then C.fwd = vel end
 	C.real = band(fx, 4) ~= 0 and ent:GetNW2Float("PropTireHeat", 0) or nil
 	local set, dset = SndSet(fx), DustSet(fx)
 	local simf = set == SET_SIMF or dset == DUST_SIMF or dset == DUST_SIMF_FILES
 	local name = simf and contact and util.GetSurfacePropName(tr.SurfaceProps) or ""
 
-	if band(fx, 1) ~= 0 and contact then
+	local now = RealTime()
+	if contact then C.contactT, C.lastS, C.lastName = now, s, name end
+	local held = contact or (C.contactT ~= nil and now - C.contactT < CONTACT_HOLD)
+	local target = held and skidNW or 0
+	local sk, step = C.skidS or 0, dt / SKID_FADE
+	if target > sk then sk = min(target, sk + step) else sk = max(target, sk - step) end
+	C.skidS = sk
+	local skid = sk
+
+	if band(fx, 1) ~= 0 and held then
+		local ss, sname, sspeed = contact and s or C.lastS or 0, contact and name or C.lastName or "", vel:Length()
 		if set ~= SET_ACE then Layer(ent, C, "skid2", nil, 0, 100) end
 		if set == SET_ACE then
-			AceSounds(ent, C, s, speed, skid)
+			AceSounds(ent, C, ss, sspeed, skid)
 		elseif set == SET_PROPER then
-			ProperSounds(ent, C, s, speed, skid)
+			ProperSounds(ent, C, ss, sspeed, skid)
 		elseif set == SET_SIMF then
-			SimfSounds(ent, C, name, speed, skid)
+			SimfSounds(ent, C, sname, sspeed, skid)
 		elseif set == SET_CUSTOM then
-			CustomSounds(ent, C, s, speed, skid)
+			CustomSounds(ent, C, ss, sspeed, skid)
 		elseif set == SET_GLIDE_FILES then
-			GlideSounds(ent, C, s, speed, skid)
+			GlideSounds(ent, C, ss, sspeed, skid)
 		else
-			TableSounds(ent, C, set == SET_GLIDE and Glide.WHEEL_SOUNDS or HL2, s, speed, skid)
+			TableSounds(ent, C, set == SET_GLIDE and Glide.WHEEL_SOUNDS or HL2, ss, sspeed, skid)
+		end
+	elseif band(fx, 1) ~= 0 then
+		for key, path in pairs(C.path) do
+			if C.snd[key] then Layer(ent, C, key, path, 0, C.pit[key] or 100) end
 		end
 	elseif next(C.snd) then
 		StopSounds(C)
 	end
+	if not contact then skid = 0 end
 
 	local mset = band(fx, 2) ~= 0 and contact and C.fwd and MarkSet(fx)
 	local skidOn = mset and skid > MARK_SKID
@@ -482,7 +543,7 @@ local Iterate = ents.Iterator or function() return ipairs(ents.GetAll()) end
 timer.Create("PropTireScan", SCAN, 0, function()
 	for _, ent in Iterate() do
 		if not tires[ent] and ent:GetNW2Int("PropTireFX", 0) ~= 0 then
-			tires[ent] = { snd = {}, path = {}, vol = {}, pit = {}, custom = {} }
+			tires[ent] = { snd = {}, path = {}, vol = {}, pit = {}, quiet = {}, custom = {} }
 		end
 	end
 end)

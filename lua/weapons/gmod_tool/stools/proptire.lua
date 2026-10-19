@@ -9,6 +9,7 @@ TOOL.ClientConVar = {
 	radius = "0",
 	width = "0",
 	pres = "20",
+	travel = "20",
 	tread = "sport",
 	axis = "0",
 	sounds = "1",
@@ -80,6 +81,7 @@ function TOOL:LeftClick(trace)
 		radius = self:GetClientNumber("radius"),
 		width = self:GetClientNumber("width"),
 		pres = self:GetClientNumber("pres"),
+		travel = self:GetClientNumber("travel"),
 		tread = self:GetClientInfo("tread"),
 		axis = self:GetClientNumber("axis"),
 		sounds = self:GetClientNumber("sounds") ~= 0,
@@ -101,7 +103,7 @@ function TOOL:LeftClick(trace)
 		ply:ChatPrint(string.format(PropTire.L(ply,
 			"Шина: радиус %.1f (сфера %.1f), ширина %.1f, ось %s. Нагрузка считается сама",
 			"Tire: radius %.1f (sphere %.1f), width %.1f, axis %s. The load is computed automatically"),
-			T.radius, T.rs, T.wid, PropTire.AXIS_NAMES[T.axis]))
+			T.radius, T.rphys, T.wid, PropTire.AXIS_NAMES[T.axis]))
 	end
 	return true
 end
@@ -116,7 +118,7 @@ function TOOL:RightClick(trace)
 		ply:ChatPrint(string.format(L(
 			"Шина: радиус %.1f (сфера %.1f), ширина %.1f, давление %.0f PSI, протектор %s, ось %s, сцепление %d%%, нагрузка %.0f Н",
 			"Tire: radius %.1f (sphere %.1f), width %.1f, pressure %.0f PSI, tread %s, axis %s, grip %d%%, load %.0f N"),
-			T.radius, T.rs, T.wid, T.pres, T.tread, PropTire.AXIS_NAMES[T.axis], math.Round((T.grip or 3) * 100), T.load))
+			T.radius, T.rphys, T.wid, T.pres, T.tread, PropTire.AXIS_NAMES[T.axis], math.Round((T.grip or 3) * 100), T.load))
 		ply:ChatPrint(string.format(L("Вес на шинах: %.0f кг, шин: %d (замороженное, без гравитации, NoCollide и AdvBallsocket «только вращение» не считаются)",
 			"Weight on tires: %.0f kg, tires: %d (frozen, gravity-off, NoCollide and rotation-only AdvBallsocket are not counted)"),
 			T.mass or 0, T.ntires or 0))
@@ -333,7 +335,7 @@ local function SoundLine(parent, label, cvar)
 end
 
 local customFrame
-local function OpenCustomWindow()
+local function BuildCustomWindow()
 	if IsValid(customFrame) then customFrame:MakePopup() return end
 	local f = vgui.Create("DFrame")
 	customFrame = f
@@ -382,6 +384,39 @@ local function OpenCustomWindow()
 	end
 end
 
+local function FillFromSet(set, paths)
+	for _, g in ipairs(PropTire.SURFACES) do
+		local p = paths[g.id]
+		RunConsoleCommand("proptire_c_" .. g.id .. "_roll", p.roll)
+		RunConsoleCommand("proptire_c_" .. g.id .. "_skid", p.skid)
+		RunConsoleCommand("proptire_c_" .. g.id .. "_vol", tostring(p.vol))
+	end
+	RunConsoleCommand("proptire_sndset", "custom")
+end
+
+local function OpenCustomWindow()
+	local set = GetConVarString("proptire_sndset")
+	local paths = set ~= "custom" and PropTire.SetSoundPaths and PropTire.SetSoundPaths(set)
+	if not paths then BuildCustomWindow() return end
+	local filled = false
+	for _, g in ipairs(PropTire.SURFACES) do
+		if GetConVarString("proptire_c_" .. g.id .. "_roll") ~= "" or GetConVarString("proptire_c_" .. g.id .. "_skid") ~= "" then
+			filled = true
+			break
+		end
+	end
+	if not filled then
+		FillFromSet(set, paths)
+		BuildCustomWindow()
+		return
+	end
+	local name = SND_NAMES[set] or set
+	Derma_Query(string.format(L("Заменить ваши звуки звуками набора %s?", "Replace your custom sounds with the %s set sounds?"), name),
+		"PROPer Tires",
+		L("Заменить", "Replace"), function() FillFromSet(set, paths) BuildCustomWindow() end,
+		L("Оставить мои", "Keep mine"), function() BuildCustomWindow() end)
+end
+
 local function Section(panel, title)
 	local line = vgui.Create("DPanel")
 	line:SetTall(2)
@@ -419,6 +454,16 @@ local function SetChoice(panel, cvar, options)
 	return combo
 end
 
+local TREAD_TEXT = {
+	race = { "Гоночный: очень цепкий на асфальте и бетоне, почти без сцепления на грунте.", "Race: very grippy on asphalt and concrete, almost no grip on dirt." },
+	sport = { "Спортивный: средний везде.", "Sport: average everywhere." },
+	dirt = { "Грунтовый: лучший на грунте и песке.", "Off-road: best on dirt and sand." },
+	military = { "Армейский: прилично везде и трудно перегреть.", "Military: decent everywhere and hard to overheat." },
+	mud = { "Грязевой: лучший в грязи и песке, слабый на асфальте.", "Mud: best in mud and sand, weak on asphalt." },
+	slick = { "Слик: самый цепкий на асфальте, беспомощен вне дороги.", "Slick: the grippiest on asphalt, helpless off-road." },
+	drift = { "Дрифтовый: на 30% меньше бокового сцепления, легко уходит в занос.", "Drift: 30% less sideways grip, slides into a drift easily." },
+}
+
 function TOOL.BuildCPanel(panel)
 	panel:Help("#tool.proptire.desc")
 	panel:AddControl("ComboBox", {
@@ -432,9 +477,12 @@ function TOOL.BuildCPanel(panel)
 	panel:NumSlider(L("Ширина пятна", "Patch width"), "proptire_width", 0, 15, 1)
 	panel:Help(L("0 - по модели", "0 = from the model"))
 	panel:NumSlider(L("Давление, PSI", "Pressure, PSI"), "proptire_pres", 5, 55, 0)
+	panel:NumSlider(L("Ход шины, %", "Tire travel, %"), "proptire_travel", 0, 30, 0)
 	panel:NumSlider(L("Сцепление, %", "Grip, %"), "proptire_grip", 50, 500, 0)
-	panel:Help(L("Давление: выше - шина жёстче, отклик резче; ниже - мягче, а на грунте, песке, траве и снегу цепче (до +15%). Ширина пятна: шире - цепче (до ±10%). Сфера - ровно по колесу.",
-		"Pressure: higher - stiffer tire, sharper response; lower - softer, with more grip on dirt, sand, grass and snow (up to +15%). Contact patch width: wider - more grip (up to ±10%). The sphere matches the wheel exactly."))
+	panel:Help(L("Давление: выше - шина жёстче, отклик резче; ниже - мягче, а на грунте, песке, траве и снегу цепче (до +15%). Ширина пятна: шире - цепче (до ±10%).",
+		"Pressure: higher - stiffer tire, sharper response; lower - softer, with more grip on dirt, sand, grass and snow (up to +15%). Contact patch width: wider - more grip (up to ±10%)."))
+	panel:Help(L("Ход шины: насколько шина пружинит, % радиуса; 0 - жёсткая, как раньше. Мягкость - по давлению.",
+		"Tire travel: how far the tire can flex, % of the radius; 0 = rigid, as before. Softness depends on pressure."))
 	panel:Help(L("Сцепление: 100% - честная физика, больше - цепче и проще в управлении.",
 		"Grip: 100% is realistic physics, more is grippier and easier to drive."))
 
@@ -443,8 +491,23 @@ function TOOL.BuildCPanel(panel)
 	tread:AddChoice(L("Гоночный", "Race"), "race")
 	tread:AddChoice(L("Спортивный", "Sport"), "sport")
 	tread:AddChoice(L("Грунтовый", "Off-road"), "dirt")
-	panel:Help(L("Гоночный - очень цепкий на асфальте и бетоне, почти без сцепления на грунте. Спортивный - средний везде. Грунтовый - лучший на грунте и песке.",
-		"Race - very grippy on asphalt and concrete, almost no grip on dirt. Sport - average everywhere. Off-road - best on dirt and sand."))
+	tread:AddChoice(L("Армейский", "Military"), "military")
+	tread:AddChoice(L("Грязевой", "Mud"), "mud")
+	tread:AddChoice(L("Слик", "Slick"), "slick")
+	tread:AddChoice(L("Дрифтовый", "Drift"), "drift")
+	local treadHelp = panel:Help("")
+	local treadShown
+	local helpThink = treadHelp.Think
+	treadHelp.Think = function(self)
+		local id = GetConVarString("proptire_tread")
+		if id ~= treadShown then
+			treadShown = id
+			local text = TREAD_TEXT[id] or TREAD_TEXT.sport
+			local limit = PropTire.HEAT_LIMIT[id] or PropTire.HEAT_LIMIT.sport
+			self:SetText(L(text[1], text[2]) .. "\n" .. string.format(L("Перегревается выше %d°C.", "Overheats above %d°C."), limit))
+		end
+		if helpThink then helpThink(self) end
+	end
 
 	local axis = panel:ComboBox(L("Ось колеса", "Wheel axis"), "proptire_axis")
 	axis:SetSortItems(false)
