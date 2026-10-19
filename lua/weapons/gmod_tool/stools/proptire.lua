@@ -31,7 +31,7 @@ for _, g in ipairs(PropTire.SURFACES) do
 end
 local ConVarsDefault = TOOL:BuildConVarList()
 
-local SND_NAMES = { ace = "ACE", hl2 = "HL2", glide = "Glide", simfphys = "Simfphys", custom = "Custom" }
+local SND_NAMES = { ace = "ACE", lvs = "LVS", hl2 = "HL2", glide = "Glide", simfphys = "Simfphys", custom = "Custom" }
 local DUST_NAMES = { proper = "Default", glide = "Glide", simfphys = "Simfphys" }
 local MARK_NAMES = { proper = "Default", glide = "Glide" }
 
@@ -549,6 +549,7 @@ function TOOL.BuildCPanel(panel)
 		{ id = "ace", name = "ACE", need = "ace" },
 		{ id = "glide", name = "Glide", need = "glide" },
 		{ id = "simfphys", name = "Simfphys", need = "simfphys" },
+		{ id = "lvs", name = "LVS", need = "lvs" },
 		{ id = "custom", name = "Custom" },
 	})
 	panel:Button(L("Свои звуки по поверхностям...", "Custom sounds per surface...")).DoClick = OpenCustomWindow

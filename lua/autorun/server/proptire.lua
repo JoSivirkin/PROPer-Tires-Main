@@ -5,6 +5,41 @@ if not PropTire.SURFACES then include("autorun/proptire_sh.lua") end
 PropTire.Tires = PropTire.Tires or {}
 local Tires = PropTire.Tires
 
+local ctrl, ctrlGen = nil, 0
+
+local function Ctrl()
+	if not IsValid(ctrl) then
+		ctrl = ents.Create("proptire_ctrl")
+		if not IsValid(ctrl) then return nil end
+		ctrl:Spawn()
+		ctrlGen = ctrlGen + 1
+	end
+	return ctrl
+end
+
+local function CtrlAttach(T, phys)
+	local c = Ctrl()
+	if not c or T.ctrlPhys == phys and T.ctrlGen == ctrlGen then return end
+	if T.ctrlPhys and T.ctrlGen == ctrlGen and IsValid(T.ctrlPhys) then c:RemoveFromMotionController(T.ctrlPhys) end
+	c:AddToMotionController(phys)
+	T.ctrlPhys, T.ctrlGen = phys, ctrlGen
+end
+
+function PropTire.CtrlDetach(ent)
+	local T = ent.PropTire
+	if not T or not T.ctrlPhys then return end
+	if IsValid(ctrl) and T.ctrlGen == ctrlGen and IsValid(T.ctrlPhys) then ctrl:RemoveFromMotionController(T.ctrlPhys) end
+	T.ctrlPhys, T.springA = nil, nil
+end
+
+local function CtrlActive()
+	return PropTire.ctrlTick ~= nil and engine.TickCount() - PropTire.ctrlTick <= 2
+end
+
+hook.Add("EntityRemoved", "PropTireCtrl", function(e)
+	if e.PropTire then PropTire.CtrlDetach(e) end
+end)
+
 local U = 0.0254
 local function Gravity()
 	return physenv.GetGravity():Length() * 0.0254
@@ -16,12 +51,12 @@ local V0 = 40
 local V_SLOW = 10
 local V_FAST = 20
 local V_HOLD = 2
+local V_NOISE = 0.3
 local RELAX = 0.5
 local ALPHA_MAX = 1.55
 local SPRING_DAMP = 0.5
 local SPRING_DAMP_REST = 1
-local REST_DEAD = 0.05
-local REST_VN = 0.0254
+local VP_JUMP = 1.27
 local SPRING_CAP = 0.8
 local LOAD_TAU = 0.1
 local LOAD_MAX = 4
@@ -151,7 +186,7 @@ local function RestoreLater(ent, list, tries)
 			end
 		end
 		RestoreConstraints(ent, list)
-		PropTire.UpdateLoads()
+		PropTire.QueueLoads()
 	end)
 end
 
@@ -235,6 +270,42 @@ local function WeightGroup(start)
 	return list
 end
 
+local GROUP_WORLD = COLLISION_GROUP_WORLD
+local DEBRIS = { [COLLISION_GROUP_DEBRIS] = true, [COLLISION_GROUP_DEBRIS_TRIGGER] = true, [COLLISION_GROUP_DISSOLVING] = true }
+
+local function GroupsCollide(a, b)
+	if a == GROUP_WORLD or b == GROUP_WORLD then return false end
+	if a == COLLISION_GROUP_IN_VEHICLE or b == COLLISION_GROUP_IN_VEHICLE then return false end
+	if DEBRIS[a] then return b == COLLISION_GROUP_NONE end
+	if DEBRIS[b] then return a == COLLISION_GROUP_NONE end
+	if a == COLLISION_GROUP_INTERACTIVE_DEBRIS and b == COLLISION_GROUP_INTERACTIVE_DEBRIS then return false end
+	if a == COLLISION_GROUP_INTERACTIVE then return b == COLLISION_GROUP_NONE end
+	if b == COLLISION_GROUP_INTERACTIVE then return a == COLLISION_GROUP_NONE end
+	if a == COLLISION_GROUP_WEAPON and b == COLLISION_GROUP_VEHICLE or b == COLLISION_GROUP_WEAPON and a == COLLISION_GROUP_VEHICLE then return false end
+	return true
+end
+
+local function Collides(wheel, e)
+	if e:IsWorld() then return true end
+	if IsValid(e:GetParent()) or e:IsPlayer() or e:IsNPC() or (e.IsNextBot and e:IsNextBot()) then return false end
+	if not GroupsCollide(wheel:GetCollisionGroup(), e:GetCollisionGroup()) then return false end
+	if constraint.Find(wheel, e, "NoCollide", 0, 0) then return false end
+	return true
+end
+
+local function MakeFilter(wheel, own)
+	local cache = {}
+	return function(e)
+		if own and own[e] or e == wheel then return false end
+		local r = cache[e]
+		if r == nil then
+			r = Collides(wheel, e)
+			cache[e] = r
+		end
+		return r
+	end
+end
+
 function PropTire.UpdateLoads()
 	local seenOwn, seenLoad = {}, {}
 	for ent in pairs(Tires) do
@@ -247,7 +318,6 @@ function PropTire.UpdateLoads()
 					if IsValid(e) then AddOwn(own, e) end
 				end
 				own[ent] = true
-				local filter = function(e) return not own[e] and not IsValid(e:GetParent()) end
 				local plate
 				for e in pairs(own) do
 					if e.PropTirePlate then plate = e break end
@@ -256,7 +326,7 @@ function PropTire.UpdateLoads()
 					if Tires[e] and e.PropTire then
 						seenOwn[e] = true
 						e.PropTire.own = own
-						e.PropTire.filter = filter
+						e.PropTire.filter = MakeFilter(e, own)
 						e.PropTire.plate = plate
 					end
 				end
@@ -283,7 +353,13 @@ function PropTire.UpdateLoads()
 	end
 end
 
-timer.Create("PropTireLoads", 1, 0, PropTire.UpdateLoads)
+function PropTire.QueueLoads()
+	timer.Create("PropTireLoads", 0.5, 1, PropTire.UpdateLoads)
+end
+
+hook.Add("AdvDupe_FinishPasting", "PropTire", PropTire.QueueLoads)
+hook.Add("PlayerUnfrozeObject", "PropTire", function() PropTire.QueueLoads() end)
+hook.Add("OnPhysgunFreeze", "PropTire", function() PropTire.QueueLoads() end)
 
 local SOUNDS = PropTire.SOUNDS
 local OWN_SOUNDS = {}
@@ -541,6 +617,7 @@ function PropTire.Apply(ent, data, ply)
 	local rphys = radius - travel
 	local defl = travel > 0 and min(radius * (0.12 - 0.08 * (data.pres - 5) / 50), travel * 0.6) or 0
 
+	PropTire.CtrlDetach(ent)
 	local list = CopyConstraints(ent)
 	local mass, ismove, sleep = phys:GetMass(), phys:IsMoveable(), phys:IsAsleep()
 	ent:PhysicsInitSphere(rphys, "rubber")
@@ -562,7 +639,7 @@ function PropTire.Apply(ent, data, ply)
 		sndset = data.sndset, dustset = data.dustset, markset = data.markset, dustsize = data.dustsize,
 		load = T and T.load or mass * Gravity(), own = T and T.own,
 		mass = T and T.mass, ntires = T and T.ntires, grp = T and T.grp, plate = T and T.plate,
-		filter = T and T.filter or function(e) return e ~= ent and not IsValid(e:GetParent()) end,
+		filter = T and T.filter or MakeFilter(ent, T and T.own),
 		grip = grip / 100,
 		slow = true,
 		heat = data.heat, heatrate = data.heatrate / 100, coolrate = data.coolrate / 100,
@@ -598,6 +675,7 @@ function PropTire.Restore(ent)
 	local phys = ent:GetPhysicsObject()
 	if not data or not IsValid(phys) then return end
 
+	PropTire.CtrlDetach(ent)
 	local list = CopyConstraints(ent)
 	local mass, ismove, sleep = phys:GetMass(), phys:IsMoveable(), phys:IsAsleep()
 	ent:PhysicsInit(SOLID_VPHYSICS)
@@ -795,29 +873,43 @@ local function Spring(T, phys, pos, vel, contacts, dt)
 	local k = dt / U
 	local kS = min(T.load / (T.defl * U), SPRING_CAP * m / (dt * dt))
 	local cS = 2 * (T.slow and SPRING_DAMP_REST or SPRING_DAMP) * sqrt(kS * T.load / gTick)
-	local still = T.slow and #contacts == 1 and T.restF
+	local share = T.load / gTick
+	local mD = T.slow and m + share or m + share * 0.5
+	local cD = cS / (1 + cS * dt / mD)
+	local single = #contacts == 1
+	local parked = T.slow and single
+	if not single then T.ccPrev = nil end
 	local sum, comp = 0, 0
+	local Fv = Vector(0, 0, 0)
 	for _, c in ipairs(contacts) do
 		local p = pos - c.n * c.dist
-		local vn = -RelVel(vel, c, p):Dot(c.n) * U
 		local cc = T.free - c.dist
-		local F
-		if still and abs(cc - T.restComp) < REST_DEAD and abs(vn) < REST_VN then
-			F = T.restF
-		else
-			F = max(kS * cc * U + cS * vn / (1 + cS * dt / m), 0)
-			T.restF, T.restComp = F, cc
+		local vn = -RelVel(vel, c, p):Dot(c.n) * U
+		if single then
+			if T.ccPrev then
+				local vp = (cc - T.ccPrev) * U / dt
+				if parked or abs(vp - vn) < VP_JUMP then vn = vp end
+			elseif parked then
+				vn = 0
+			end
+			T.ccPrev = cc
 		end
+		local F = max(kS * (cc * U + vn * dt * 0.5) + cD * vn, 0)
 		T.dVn = vn / U
 		c.F = F
 		sum = sum + F
 		comp = max(comp, T.free - c.dist)
 		if F > 0 then
-			local J = F * k
-			phys:ApplyForceCenter(c.n * J)
+			Fv = Fv + c.n * F
 			local gp = IsValid(c.ent) and c.ent:GetPhysicsObject()
-			if gp and IsValid(gp) and gp:IsMoveable() then gp:ApplyForceOffset(c.n * -J, p) end
+			if gp and IsValid(gp) and gp:IsMoveable() then gp:ApplyForceOffset(c.n * (-F * k), p) end
 		end
+	end
+	if CtrlActive() and T.ctrlPhys == phys then
+		T.springA = Fv / (m * U)
+	else
+		T.springA = nil
+		if sum > 0 then phys:ApplyForceCenter(Fv * k) end
 	end
 	T.dF, T.dComp = sum, comp
 	return sum
@@ -831,6 +923,7 @@ local function Simulate(ent, T, dt)
 	T.skid = 0
 	T.ground, T.surf, T.slip, T.alpha, T.fx, T.fy, T.mu, T.groundV = false, "", 0, 0, 0, 0, 0, 0
 	T.wheelV, T.hP, T.hV, T.hCool, T.fvec, T.contacts, T.curLoad = 0, 0, 0, 1, nil, 0, nil
+	T.springA = nil
 	local wPrev, dwOurs = T.wPrev, T.dwOurs or 0
 	T.wPrev, T.dwOurs = nil, 0
 	local phys = ent:GetPhysicsObject()
@@ -860,6 +953,7 @@ local function Simulate(ent, T, dt)
 	local vel = phys:GetVelocity()
 	local Fs = 0
 	if T.susp then
+		CtrlAttach(T, phys)
 		Fs = contacts[1] and Spring(T, phys, pos, vel, contacts, dt) or 0
 		local nG = T.nGrip or Fs
 		T.nGrip = nG + (Fs - nG) * min(dt / LOAD_TAU, 1)
@@ -925,13 +1019,20 @@ local function Simulate(ent, T, dt)
 		T.dState = "rest"
 		if T.susp then
 			local cap = T.mu * N * k
-			local hold = abs(linvel) < V_HOLD and T.load * DOWN:Dot(fP) * k or 0
-			local jx = math.Clamp(RELAX * (linvel - forvel) * mx - hold, -cap, cap)
-			local jy = math.Clamp(-RELAX * latvel * m - T.load * DOWN:Dot(lP) * k, -cap, cap)
-			if jx ~= 0 then phys:ApplyForceOffset(fP * jx, ContactPoint(T, pos, prim)) end
+			local fv = abs(forvel) < V_NOISE and 0 or forvel
+			local lv = abs(latvel) < V_NOISE and 0 or latvel
+			local jx
+			if abs(linvel) < V_HOLD then
+				jx = math.Clamp(-RELAX * fv * m - T.load * DOWN:Dot(fP) * k, -cap, cap)
+				if jx ~= 0 then phys:ApplyForceCenter(fP * jx) end
+			else
+				jx = math.Clamp(RELAX * (linvel - forvel) * mx, -cap, cap)
+				if jx ~= 0 then phys:ApplyForceOffset(fP * jx, ContactPoint(T, pos, prim)) end
+				T.dwOurs = jx * spin
+			end
+			local jy = math.Clamp(-RELAX * lv * m - T.load * DOWN:Dot(lP) * k, -cap, cap)
 			if jy ~= 0 then phys:ApplyForceCenter(lP * jy) end
 			T.fvec = fP * (jx / k) + lP * (jy / k)
-			T.dwOurs = jx * spin
 		end
 		return
 	end
@@ -1007,6 +1108,7 @@ timer.Create("PropTireDebug", 1, 0, function()
 					", пружина %.0f Н, сжатие %.1f из %.1f, верт. %.1f юн/с, нагрузка %.0f Н (доля %.0f)",
 					", spring %.0f N, compression %.1f of %.1f, vertical %.1f u/s, load %.0f N (share %.0f)"),
 					T.dF or 0, T.dComp or 0, T.free - T.rphys, T.dVn or 0, T.curLoad or 0, T.load)
+					.. (T.springA and PropTire.L(ply, ", по шагам физики", ", per physics step") or "")
 			end
 			ply:ChatPrint(line)
 		end

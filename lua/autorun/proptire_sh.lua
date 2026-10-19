@@ -2,7 +2,7 @@ AddCSLuaFile()
 
 PropTire = PropTire or {}
 
-PropTire.SND_SETS = { hl2 = 0, glide = 1, simfphys = 2, custom = 3, ace = 5 }
+PropTire.SND_SETS = { hl2 = 0, glide = 1, simfphys = 2, custom = 3, ace = 5, lvs = 6 }
 PropTire.DUST_SETS = { glide = 0, simfphys = 1, proper = 2 }
 PropTire.MARK_SETS = { glide = 0, proper = 1 }
 PropTire.HEAT_LIMIT = { race = 110, sport = 95, dirt = 80, military = 120, mud = 75, slick = 120, drift = 100 }
@@ -87,6 +87,7 @@ local CONTENT = {
 	ace = "sound/acf_extra/vehiclefx/tires/road.wav",
 	glide = "sound/glide/wheels/roll_dirt.wav",
 	simfphys = "sound/simulated_vehicles/sfx/concrete_roll.wav",
+	lvs = "sound/lvs/vehicles/generic/wheel_roll.wav",
 }
 local hasContent = {}
 

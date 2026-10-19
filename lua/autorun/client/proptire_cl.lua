@@ -69,7 +69,7 @@ local function Ramp(x, a, b)
 	return Clamp((x - a) / (b - a), 0, 1)
 end
 
-local SET_HL2, SET_GLIDE, SET_SIMF, SET_CUSTOM, SET_ACE = 0, 1, 2, 3, 5
+local SET_HL2, SET_GLIDE, SET_SIMF, SET_CUSTOM, SET_ACE, SET_LVS = 0, 1, 2, 3, 5, 6
 local SET_GLIDE_FILES = 10
 local ACE = "acf_extra/vehiclefx/tires/"
 local function SndSet(fx)
@@ -80,8 +80,23 @@ local function SndSet(fx)
 	end
 	if set == SET_SIMF and not Installed("simfphys") then return SET_HL2 end
 	if set == SET_ACE and not HasContent("ace") then return SET_HL2 end
+	if set == SET_LVS and not HasContent("lvs") then return SET_HL2 end
 	return set
 end
+
+local LVS = "lvs/vehicles/generic/"
+local LVS_HEAVY_R = 20
+local LVS_SND = {
+	asphalt = { roll = "wheel_roll",      skid = "wheel_skid",      heavy = true, vol = 0.8 },
+	dirt    = { roll = "wheel_roll_dirt", skid = "wheel_skid_dirt", heavy = true, vol = 0.9 },
+	sand    = { roll = "wheel_roll_dirt", skid = "wheel_skid_dirt", heavy = true, vol = 0.9, pitch = 0.9 },
+	grass   = { roll = "wheel_roll_dirt", skid = "wheel_skid_dirt", heavy = true, vol = 0.8, pitch = 1.05 },
+	snow    = { roll = "wheel_roll_dirt", skid = "wheel_skid_dirt", heavy = true, vol = 0.7, pitch = 0.9 },
+	wood    = { roll = "wheel_roll",      skid = "wheel_skid",      heavy = true, vol = 0.8, pitch = 0.9 },
+	metal   = { roll = "wheel_roll",      skid = "wheel_skid",      heavy = true, vol = 0.7, pitch = 1.1 },
+	water   = { roll = "wheel_roll_wet",  skid = "wheel_skid_wet",  vol = 0.8 },
+	other   = { roll = "wheel_roll",      skid = "wheel_skid",      heavy = true, vol = 0.7 },
+}
 
 local ACE_SND = {
 	asphalt = { roll = "road",      skid = "skidroadlight",    heavy = "skidroadheavymajor", vol = 0.8 },
@@ -148,6 +163,9 @@ local function SetSoundsFor(set, g)
 		local soft = g.id == "dirt" or g.id == "sand"
 		local kind = grass and "grass" or soft and "dirt" or "concrete"
 		return SIMF .. kind .. "_roll.wav", SIMF .. kind .. "_skid.wav", (grass or soft) and 0.9 or 0.8
+	elseif set == "lvs" then
+		local p = LVS_SND[g.id] or LVS_SND.other
+		return LVS .. p.roll .. ".wav", LVS .. p.skid .. ".wav", p.vol
 	elseif set == "hl2" then
 		local mat = g.mats[1] or MAT_DEFAULT
 		return HL2.ROLL[mat] or "", HL2.SIDE_SLIP[mat] or HL2.SIDE_SLIP[MAT_DEFAULT] or "", 0.8
@@ -309,6 +327,24 @@ local function AceSounds(ent, C, s, speed, skid)
 	Layer(ent, C, "skid2", p.heavy and Usable(ACE .. p.heavy .. ".wav"), skid * h * p.vol, sp)
 end
 
+local function LvsFile(name, heavy)
+	if heavy then
+		local h = Usable(LVS .. "heavy" .. name .. ".wav")
+		if h then return h end
+	end
+	return Usable(LVS .. name .. ".wav")
+end
+
+local function LvsSounds(ent, C, s, speed, skid, r)
+	local p = LVS_SND[PropTire.SurfaceGroup(s).id] or LVS_SND.other
+	local heavy = p.heavy and r >= LVS_HEAVY_R
+	local pitch = p.pitch or 1
+	Layer(ent, C, "roll", LvsFile(p.roll, heavy), Ramp(speed, SLOW_FROM, ROLL_FULL) * p.vol,
+		(85 + 35 * Ramp(speed, 0, 1200)) * pitch)
+	Layer(ent, C, "slow", nil, 0, 100)
+	Layer(ent, C, "skid", LvsFile(p.skid, heavy), skid * p.vol, (90 + 20 * skid) * pitch)
+end
+
 local function Heat(C, on, skid, dt)
 	if C.real then
 		C.heat = C.real
@@ -455,6 +491,8 @@ local function UpdateTire(ent, C, fx, dt)
 		if set ~= SET_ACE then Layer(ent, C, "skid2", nil, 0, 100) end
 		if set == SET_ACE then
 			AceSounds(ent, C, ss, sspeed, skid)
+		elseif set == SET_LVS then
+			LvsSounds(ent, C, ss, sspeed, skid, r)
 		elseif set == SET_SIMF then
 			SimfSounds(ent, C, sname, sspeed, skid)
 		elseif set == SET_CUSTOM then
