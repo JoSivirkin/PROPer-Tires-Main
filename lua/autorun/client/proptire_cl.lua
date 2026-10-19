@@ -31,7 +31,6 @@ local HL2 = {
 		[MAT_METAL] = "physics/metal/metal_box_scrape_smooth_loop1.wav",
 		[MAT_GRATE] = "physics/metal/metal_box_scrape_smooth_loop1.wav",
 	},
-	ROLL_SLOW = {},
 	SIDE_SLIP = {
 		[MAT_DEFAULT] = "vehicles/v8/skid_normalfriction.wav",
 		[MAT_CONCRETE] = "vehicles/v8/skid_highfriction.wav",
@@ -70,7 +69,7 @@ local function Ramp(x, a, b)
 	return Clamp((x - a) / (b - a), 0, 1)
 end
 
-local SET_HL2, SET_GLIDE, SET_SIMF, SET_CUSTOM, SET_PROPER, SET_ACE = 0, 1, 2, 3, 4, 5
+local SET_HL2, SET_GLIDE, SET_SIMF, SET_CUSTOM, SET_ACE = 0, 1, 2, 3, 5
 local SET_GLIDE_FILES = 10
 local ACE = "acf_extra/vehiclefx/tires/"
 local function SndSet(fx)
@@ -135,18 +134,6 @@ local function MarkSet(fx)
 	end
 	return MARKS_PROPER
 end
-
-local PROPER = {
-	asphalt = { roll = "roll_asphalt", skid = "skid_asphalt", vol = 0.8, pitch = 1 },
-	dirt    = { roll = "roll_dirt",    skid = "skid_dirt",    vol = 0.9, pitch = 1 },
-	sand    = { roll = "roll_dirt",    skid = "skid_dirt",    vol = 0.9, pitch = 0.85 },
-	grass   = { roll = "roll_grass",   skid = "skid_dirt",    vol = 0.8, pitch = 1.1 },
-	snow    = { roll = "roll_grass",   skid = "skid_dirt",    vol = 0.6, pitch = 0.8 },
-	metal   = { roll = "roll_asphalt", skid = "skid_asphalt", vol = 0.7, pitch = 1.2 },
-	wood    = { roll = "roll_asphalt", skid = "skid_asphalt", vol = 0.7, pitch = 0.9 },
-	water   = { roll = "roll_grass",                          vol = 0.5, pitch = 0.7 },
-	other   = { roll = "roll_asphalt", skid = "skid_asphalt", vol = 0.7, pitch = 1 },
-}
 
 local function SetSoundsFor(set, g)
 	if set == "ace" then
@@ -231,7 +218,6 @@ local function StopAll(ent, C)
 end
 
 local function Layer(ent, C, key, path, vol, pitch)
-	C.quiet = C.quiet or {}
 	local snd = C.snd[key]
 	if snd and C.path[key] ~= path then
 		snd:Stop()
@@ -309,14 +295,6 @@ local function CustomSounds(ent, C, s, speed, skid)
 	Layer(ent, C, "roll", c.roll, roll * c.vol, 85 + 35 * Ramp(speed, 0, 1200))
 	Layer(ent, C, "slow", nil, 0, 100)
 	Layer(ent, C, "skid", c.skid, skid * c.vol, 90 + 25 * skid)
-end
-
-local function ProperSounds(ent, C, s, speed, skid)
-	local p = PROPER[PropTire.SurfaceGroup(s).id] or PROPER.other
-	local roll = Ramp(speed, SLOW_FROM, ROLL_FULL)
-	Layer(ent, C, "roll", Usable("proptire/" .. p.roll .. ".wav"), roll * p.vol, (85 + 35 * Ramp(speed, 0, 1200)) * p.pitch)
-	Layer(ent, C, "slow", nil, 0, 100)
-	Layer(ent, C, "skid", p.skid and Usable("proptire/" .. p.skid .. ".wav"), skid * p.vol, (90 + 25 * skid) * p.pitch)
 end
 
 local function AceSounds(ent, C, s, speed, skid)
@@ -477,8 +455,6 @@ local function UpdateTire(ent, C, fx, dt)
 		if set ~= SET_ACE then Layer(ent, C, "skid2", nil, 0, 100) end
 		if set == SET_ACE then
 			AceSounds(ent, C, ss, sspeed, skid)
-		elseif set == SET_PROPER then
-			ProperSounds(ent, C, ss, sspeed, skid)
 		elseif set == SET_SIMF then
 			SimfSounds(ent, C, sname, sspeed, skid)
 		elseif set == SET_CUSTOM then

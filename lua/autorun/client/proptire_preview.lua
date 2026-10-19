@@ -33,18 +33,9 @@ local function Shape(ent)
 	end
 	local mins, maxs = ent:OBBMins(), ent:OBBMaxs()
 	if PropTire.CubeBox(ent) then mins, maxs = ent:GetModelBounds() end
-	local size = maxs - mins
-	local s = { size.x, size.y, size.z }
-	local axis = math.Clamp(math.floor(GetConVarNumber("proptire_axis")), 0, 3)
-	if axis == 0 then
-		axis = 1
-		for i = 2, 3 do if s[i] < s[axis] then axis = i end end
-	end
-	local mr = 0
-	for i = 1, 3 do if i ~= axis then mr = math.max(mr, s[i] / 2) end end
-	local r = GetConVarNumber("proptire_radius")
-	local w = GetConVarNumber("proptire_width")
-	return axis, math.Clamp(r > 0 and r or mr, 1, 200), math.Clamp(w > 0 and w or s[axis], 2, 15)
+	local axis, _, r, w = PropTire.WheelSize(mins, maxs, math.Clamp(math.floor(GetConVarNumber("proptire_axis")), 0, 3),
+		GetConVarNumber("proptire_radius"), GetConVarNumber("proptire_width"))
+	return axis, r, w
 end
 
 local function Lines(list, width, col)

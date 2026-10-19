@@ -10,6 +10,7 @@ local function Gravity()
 	return physenv.GetGravity():Length() * 0.0254
 end
 PropTire.Gravity = Gravity
+local gTick = 9.81
 local MARGIN = 3
 local V0 = 40
 local V_SLOW = 10
@@ -18,9 +19,13 @@ local V_HOLD = 2
 local RELAX = 0.5
 local ALPHA_MAX = 1.55
 local SPRING_DAMP = 0.5
+local SPRING_DAMP_REST = 1
+local REST_DEAD = 0.05
+local REST_VN = 0.0254
 local SPRING_CAP = 0.8
 local LOAD_TAU = 0.1
 local LOAD_MAX = 4
+local HELD_SMOOTH = 0.5
 
 PropTire.SOUNDS = { impactSoft = "Rubber_Tire.ImpactSoft", impactHard = "Rubber_Tire.ImpactHard" }
 local SND_SETS, DUST_SETS, MARK_SETS = PropTire.SND_SETS, PropTire.DUST_SETS, PropTire.MARK_SETS
@@ -47,38 +52,26 @@ local HEAT_SPAN = 20
 PropTire.AMBIENT = AMBIENT
 
 PropTire.TREADS = {
-	race     = { hard = 1.15, dirt = 0.5,  sand = 0.4,  grass = 0.45, snow = 0.25, other = 0.7 },
-	sport    = { hard = 1.0,  dirt = 0.7,  sand = 0.55, grass = 0.6,  snow = 0.35, other = 0.75 },
-	dirt     = { hard = 0.85, dirt = 0.95, sand = 0.85, grass = 0.85, snow = 0.5,  other = 0.75 },
-	military = { hard = 0.9,  dirt = 0.85, sand = 0.75, grass = 0.8,  snow = 0.45, other = 0.8 },
-	mud      = { hard = 0.7,  dirt = 1.05, sand = 0.95, grass = 0.95, snow = 0.55, other = 0.7 },
-	slick    = { hard = 1.3,  dirt = 0.35, sand = 0.3,  grass = 0.3,  snow = 0.15, other = 0.6 },
-	drift    = { hard = 1.0,  dirt = 0.7,  sand = 0.55, grass = 0.6,  snow = 0.35, other = 0.75, lat = 0.7 },
+	race     = { asphalt = 1.15, dirt = 0.5,  sand = 0.4,  grass = 0.45, snow = 0.25, other = 0.7 },
+	sport    = { asphalt = 1.0,  dirt = 0.7,  sand = 0.55, grass = 0.6,  snow = 0.35, other = 0.75 },
+	dirt     = { asphalt = 0.85, dirt = 0.95, sand = 0.85, grass = 0.85, snow = 0.5,  other = 0.75 },
+	military = { asphalt = 0.9,  dirt = 0.85, sand = 0.75, grass = 0.8,  snow = 0.45, other = 0.8 },
+	mud      = { asphalt = 0.7,  dirt = 1.05, sand = 0.95, grass = 0.95, snow = 0.55, other = 0.7 },
+	slick    = { asphalt = 1.3,  dirt = 0.35, sand = 0.3,  grass = 0.3,  snow = 0.15, other = 0.6 },
+	drift    = { asphalt = 1.0,  dirt = 0.7,  sand = 0.55, grass = 0.6,  snow = 0.35, other = 0.75, lat = 0.7 },
 }
 local TREADS = PropTire.TREADS
-local SURF_GROUP = {
-	[MAT_CONCRETE] = "hard", [MAT_TILE] = "hard", [MAT_DIRT] = "dirt", [MAT_SAND] = "sand",
-	[MAT_GRASS] = "grass", [MAT_FOLIAGE] = "grass", [MAT_SNOW] = "snow",
-}
 local SOFT_GROUP = { dirt = true, sand = true, grass = true, snow = true }
 
-PropTire.MAT_NAMES = {
-	[MAT_CONCRETE] = { "бетон/асфальт", "concrete/asphalt" }, [MAT_TILE] = { "плитка", "tile" },
-	[MAT_DIRT] = { "грунт", "dirt" }, [MAT_METAL] = { "металл", "metal" }, [MAT_SAND] = { "песок", "sand" },
-	[MAT_GRASS] = { "трава", "grass" }, [MAT_FOLIAGE] = { "листва", "foliage" }, [MAT_SNOW] = { "снег", "snow" },
-	[MAT_WOOD] = { "дерево", "wood" },
-}
-
 function PropTire.MatName(ply, matType)
-	local n = PropTire.MAT_NAMES[matType]
-	if not n then return PropTire.L(ply, "другое", "other") end
-	return PropTire.RU(ply) and n[1] or n[2]
+	local g = PropTire.SurfaceGroup(matType)
+	return PropTire.L(ply, g.ru, g.en)
 end
 
 function PropTire.Friction(tread, matType, pres)
 	local t = TREADS[tread] or TREADS.sport
-	local g = SURF_GROUP[matType] or "other"
-	local mu = t[g]
+	local g = PropTire.SurfaceGroup(matType).id
+	local mu = t[g] or t.other
 	if SOFT_GROUP[g] and pres then mu = mu * (1 + 0.15 * (55 - pres) / 50) end
 	return mu
 end
@@ -91,7 +84,7 @@ local AXIS_NAMES = { "X", "Y", "Z" }
 PropTire.AXIS_NAMES = AXIS_NAMES
 local DOWN = Vector(0, 0, -1)
 
-local abs, max, min, sqrt, tan, sin, cos, atan, pi = math.abs, math.max, math.min, math.sqrt, math.tan, math.sin, math.cos, math.atan, math.pi
+local abs, max, min, sqrt, sin, cos, atan = math.abs, math.max, math.min, math.sqrt, math.sin, math.cos, math.atan
 
 local function CopyConstraints(ent)
 	local list = constraint.GetTable(ent)
@@ -170,6 +163,46 @@ local function AddOwn(own, e)
 	end
 end
 
+local function PlateDown(P)
+	local d = P.PropTirePlate
+	local v = AXES[d.axis] * d.sign
+	v:Rotate(P:GetAngles())
+	return v
+end
+
+function PropTire.SetPlate(ent, on)
+	local root = ent
+	while IsValid(root:GetParent()) do root = root:GetParent() end
+	local own = {}
+	for _, e in pairs(constraint.GetAllConstrainedEntities(root)) do
+		if IsValid(e) then AddOwn(own, e) end
+	end
+	AddOwn(own, root)
+	for e in pairs(own) do
+		if e.PropTirePlate then
+			e.PropTirePlate = nil
+			duplicator.ClearEntityModifier(e, "PropTirePlate")
+		end
+	end
+	if on then
+		local l = ent:WorldToLocal(ent:GetPos() + DOWN)
+		local axis = 1
+		for i = 2, 3 do if abs(l[i]) > abs(l[axis]) then axis = i end end
+		local data = { axis = axis, sign = l[axis] < 0 and -1 or 1 }
+		ent.PropTirePlate = data
+		duplicator.StoreEntityModifier(ent, "PropTirePlate", data)
+	end
+	PropTire.UpdateLoads()
+end
+
+duplicator.RegisterEntityModifier("PropTirePlate", function(ply, ent, data)
+	if not istable(data) then return end
+	local axis = math.Clamp(math.floor(tonumber(data.axis) or 3), 1, 3)
+	local sign = (tonumber(data.sign) or -1) < 0 and -1 or 1
+	ent.PropTirePlate = { axis = axis, sign = sign }
+	duplicator.StoreEntityModifier(ent, "PropTirePlate", ent.PropTirePlate)
+end)
+
 local function Carries(c)
 	if not IsValid(c) or c.Type == "NoCollide" then return false end
 	if c.Type == "AdvBallsocket" then
@@ -215,11 +248,16 @@ function PropTire.UpdateLoads()
 				end
 				own[ent] = true
 				local filter = function(e) return not own[e] and not IsValid(e:GetParent()) end
+				local plate
+				for e in pairs(own) do
+					if e.PropTirePlate then plate = e break end
+				end
 				for e in pairs(own) do
 					if Tires[e] and e.PropTire then
 						seenOwn[e] = true
 						e.PropTire.own = own
 						e.PropTire.filter = filter
+						e.PropTire.plate = plate
 					end
 				end
 			end
@@ -429,18 +467,7 @@ local cvMaxWidth = CreateConVar("proptire_max_width", "15", FCVAR_ARCHIVE, "PROP
 local cvMaxGrip = CreateConVar("proptire_max_grip", "500", FCVAR_ARCHIVE, "PROPer Tires: maximum Grip %", 50, 500)
 
 local function Requested(data)
-	local size = data.maxs - data.mins
-	local s = { size.x, size.y, size.z }
-	local axis = data.axis
-	if axis == 0 then
-		axis = 1
-		for i = 2, 3 do if s[i] < s[axis] then axis = i end end
-	end
-	local mr = 0
-	for i = 1, 3 do if i ~= axis then mr = max(mr, s[i] / 2) end end
-	local radius = math.Clamp(data.radius > 0 and data.radius or mr, 1, 200)
-	local wid = math.Clamp(data.width > 0 and data.width or s[axis], 2, 15)
-	return axis, s, radius, wid
+	return PropTire.WheelSize(data.mins, data.maxs, data.axis, data.radius, data.width)
 end
 
 local function Limited(radius, wid, grip)
@@ -478,10 +505,6 @@ function PropTire.Apply(ent, data, ply)
 	data.sounds = data.sounds ~= false
 	data.marks = data.marks ~= false
 	data.dust = data.dust ~= false
-	local oldset = data.fxset or data.soundset
-	data.fxset, data.soundset = nil, nil
-	data.sndset = data.sndset or oldset
-	data.dustset = data.dustset or (oldset == "simfphys" and "simfphys" or "glide")
 	if not SND_SETS[data.sndset] then data.sndset = "hl2" end
 	if not DUST_SETS[data.dustset] then data.dustset = "glide" end
 	if not MARK_SETS[data.markset] then data.markset = "glide" end
@@ -538,7 +561,7 @@ function PropTire.Apply(ent, data, ply)
 		sounds = data.sounds, marks = data.marks, dust = data.dust,
 		sndset = data.sndset, dustset = data.dustset, markset = data.markset, dustsize = data.dustsize,
 		load = T and T.load or mass * Gravity(), own = T and T.own,
-		mass = T and T.mass, ntires = T and T.ntires, grp = T and T.grp,
+		mass = T and T.mass, ntires = T and T.ntires, grp = T and T.grp, plate = T and T.plate,
 		filter = T and T.filter or function(e) return e ~= ent and not IsValid(e:GetParent()) end,
 		grip = grip / 100,
 		slow = true,
@@ -733,6 +756,7 @@ local function FindContacts(T, pos, a, d, tr)
 			contacts[1] = { n = n, dist = dist, ent = tr.Entity, mat = PropTire.TraceMat(tr), w = max(-n:Dot(d), 0.05) }
 		end
 	end
+	if T.slow and not T.susp then return contacts end
 	local g = a:Cross(d)
 	for _, sc in ipairs(SIDE_DIR) do
 		local dir = d * sc[1] + g * sc[2]
@@ -770,12 +794,21 @@ local function Spring(T, phys, pos, vel, contacts, dt)
 	local m = phys:GetMass()
 	local k = dt / U
 	local kS = min(T.load / (T.defl * U), SPRING_CAP * m / (dt * dt))
-	local cS = 2 * SPRING_DAMP * sqrt(kS * T.load / Gravity())
+	local cS = 2 * (T.slow and SPRING_DAMP_REST or SPRING_DAMP) * sqrt(kS * T.load / gTick)
+	local still = T.slow and #contacts == 1 and T.restF
 	local sum, comp = 0, 0
 	for _, c in ipairs(contacts) do
 		local p = pos - c.n * c.dist
 		local vn = -RelVel(vel, c, p):Dot(c.n) * U
-		local F = max(kS * (T.free - c.dist) * U + cS * vn / (1 + cS * dt / m), 0)
+		local cc = T.free - c.dist
+		local F
+		if still and abs(cc - T.restComp) < REST_DEAD and abs(vn) < REST_VN then
+			F = T.restF
+		else
+			F = max(kS * cc * U + cS * vn / (1 + cS * dt / m), 0)
+			T.restF, T.restComp = F, cc
+		end
+		T.dVn = vn / U
 		c.F = F
 		sum = sum + F
 		comp = max(comp, T.free - c.dist)
@@ -798,6 +831,8 @@ local function Simulate(ent, T, dt)
 	T.skid = 0
 	T.ground, T.surf, T.slip, T.alpha, T.fx, T.fy, T.mu, T.groundV = false, "", 0, 0, 0, 0, 0, 0
 	T.wheelV, T.hP, T.hV, T.hCool, T.fvec, T.contacts, T.curLoad = 0, 0, 0, 1, nil, 0, nil
+	local wPrev, dwOurs = T.wPrev, T.dwOurs or 0
+	T.wPrev, T.dwOurs = nil, 0
 	local phys = ent:GetPhysicsObject()
 	if not IsValid(phys) or not phys:IsMoveable() or phys:IsAsleep() or T.load <= 0 then
 		T.dState = "frozen"
@@ -808,7 +843,9 @@ local function Simulate(ent, T, dt)
 
 	local pos = phys:GetPos()
 	local a = phys:LocalToWorldVector(T.alocal)
-	local d = DOWN - a * DOWN:Dot(a)
+	local P = T.plate
+	local down = (P and IsValid(P) and P.PropTirePlate) and PlateDown(P) or DOWN
+	local d = down - a * down:Dot(a)
 	if d:LengthSqr() < 0.09 then T.dState = "flat" return end
 	d:Normalize()
 	TR.start = pos
@@ -862,7 +899,15 @@ local function Simulate(ent, T, dt)
 	local k = dt / U
 	local m = phys:GetMass()
 	local I = phys:GetInertia():Dot(T.alocal) / U ^ 2
-	local mx = I > 0 and 1 / (1 / m + T.rs ^ 2 / I) or m
+	local w = linvel / T.rs
+	if wPrev and abs(dwOurs) > 0.01 then
+		local ace = (w - wPrev) - dwOurs
+		local h = ace * (wPrev + dwOurs) < 0 and math.Clamp(-ace / dwOurs, 0, 1) or 0
+		T.held = (T.held or 0) + (h - (T.held or 0)) * HELD_SMOOTH
+	end
+	T.wPrev = w
+	local mx = I > 0 and 1 / (1 / m + (1 - (T.held or 0)) * T.rs ^ 2 / I) or m
+	local spin = I > 0 and -T.rs / I or 0
 
 	if T.slow and moving >= V_FAST then
 		T.slow = false
@@ -886,6 +931,7 @@ local function Simulate(ent, T, dt)
 			if jx ~= 0 then phys:ApplyForceOffset(fP * jx, ContactPoint(T, pos, prim)) end
 			if jy ~= 0 then phys:ApplyForceCenter(lP * jy) end
 			T.fvec = fP * (jx / k) + lP * (jy / k)
+			T.dwOurs = jx * spin
 		end
 		return
 	end
@@ -920,6 +966,7 @@ local function Simulate(ent, T, dt)
 			local jl = lv > 0 and -jy or jy
 			if jx ~= 0 then phys:ApplyForceOffset(f * jx, p) end
 			if jy > 0 then phys:ApplyForceCenter(l * jl) end
+			T.dwOurs = T.dwOurs + jx * spin
 			fvec = fvec + f * (jx / k) + l * (jl / k)
 			skid = max(skid, sqrt((linvel - fv) ^ 2 + lv ^ 2))
 			hP = hP + (abs(jx / k) * abs(linvel - fv) + abs(jl / k) * abs(lv)) * U
@@ -953,12 +1000,15 @@ timer.Create("PropTireDebug", 1, 0, function()
 				ent:EntIndex(), state, hit, T.dFor or 0, T.dLin or 0, T.dLat or 0,
 				T.dS or 0, T.dFx or 0, T.dJx or 0, T.dJmax or 0)
 				.. (T.heat and string.format(", %.0f°C x%.2f", T.temp, HeatGrip(T)) or ""))
+			local line = string.format(PropTire.L(ply, "[%d] тормоз ACE держит %.2f", "[%d] ACE brake hold %.2f"),
+				ent:EntIndex(), T.held or 0)
 			if T.susp then
-				ply:ChatPrint(string.format(PropTire.L(ply,
-					"[%d] пружина %.0f Н, сжатие %.1f из %.1f, нагрузка %.0f Н (доля %.0f)",
-					"[%d] spring %.0f N, compression %.1f of %.1f, load %.0f N (share %.0f)"),
-					ent:EntIndex(), T.dF or 0, T.dComp or 0, T.free - T.rphys, T.curLoad or 0, T.load))
+				line = line .. string.format(PropTire.L(ply,
+					", пружина %.0f Н, сжатие %.1f из %.1f, верт. %.1f юн/с, нагрузка %.0f Н (доля %.0f)",
+					", spring %.0f N, compression %.1f of %.1f, vertical %.1f u/s, load %.0f N (share %.0f)"),
+					T.dF or 0, T.dComp or 0, T.free - T.rphys, T.dVn or 0, T.curLoad or 0, T.load)
 			end
+			ply:ChatPrint(line)
 		end
 	end
 end)
@@ -1000,6 +1050,7 @@ end)
 
 hook.Add("Tick", "PropTire", function()
 	local dt = engine.TickInterval()
+	gTick = Gravity()
 	for ent in pairs(Tires) do
 		if IsValid(ent) and ent.PropTire then
 			Simulate(ent, ent.PropTire, dt)

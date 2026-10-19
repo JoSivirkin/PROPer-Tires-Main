@@ -2,7 +2,7 @@ AddCSLuaFile()
 
 PropTire = PropTire or {}
 
-PropTire.SND_SETS = { hl2 = 0, glide = 1, simfphys = 2, custom = 3, proper = 4, ace = 5 }
+PropTire.SND_SETS = { hl2 = 0, glide = 1, simfphys = 2, custom = 3, ace = 5 }
 PropTire.DUST_SETS = { glide = 0, simfphys = 1, proper = 2 }
 PropTire.MARK_SETS = { glide = 0, proper = 1 }
 PropTire.HEAT_LIMIT = { race = 110, sport = 95, dirt = 80, military = 120, mud = 75, slick = 120, drift = 100 }
@@ -69,6 +69,18 @@ function PropTire.CubeBox(ent)
 	local a, b = ent:GetModelBounds()
 	local m = b - a
 	return math.abs(m.x - m.y) > 0.5 or math.abs(m.y - m.z) > 0.5 or math.abs(m.x - m.z) > 0.5
+end
+
+function PropTire.WheelSize(mins, maxs, axis, radius, width)
+	local size = maxs - mins
+	local s = { size.x, size.y, size.z }
+	if axis == 0 then
+		axis = 1
+		for i = 2, 3 do if s[i] < s[axis] then axis = i end end
+	end
+	local mr = 0
+	for i = 1, 3 do if i ~= axis then mr = math.max(mr, s[i] / 2) end end
+	return axis, s, math.Clamp(radius > 0 and radius or mr, 1, 200), math.Clamp(width > 0 and width or s[axis], 2, 15)
 end
 
 local CONTENT = {

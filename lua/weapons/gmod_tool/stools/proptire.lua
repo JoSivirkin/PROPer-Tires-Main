@@ -31,7 +31,7 @@ for _, g in ipairs(PropTire.SURFACES) do
 end
 local ConVarsDefault = TOOL:BuildConVarList()
 
-local SND_NAMES = { ace = "ACE", proper = "PROPer", hl2 = "HL2", glide = "Glide", simfphys = "Simfphys", custom = "Custom" }
+local SND_NAMES = { ace = "ACE", hl2 = "HL2", glide = "Glide", simfphys = "Simfphys", custom = "Custom" }
 local DUST_NAMES = { proper = "Default", glide = "Glide", simfphys = "Simfphys" }
 local MARK_NAMES = { proper = "Default", glide = "Glide" }
 
@@ -46,7 +46,7 @@ if CLIENT then
 	language.Add("tool.proptire.name", "PROPer Tires")
 	language.Add("tool.proptire.desc", L("Любой проп - шина с симуляцией сцепления", "Any prop becomes a tire with grip simulation"))
 	language.Add("tool.proptire.left", L("Сделать проп шиной / обновить настройки", "Make the prop a tire / update settings"))
-	language.Add("tool.proptire.right", L("Показать шину или покрытие под прицелом", "Show the tire or surface under the crosshair"))
+	language.Add("tool.proptire.right", L("Шина - сведения и отладка; проп - главная плата машины; земля - покрытие", "Tire - info and debug; prop - the vehicle's main plate; ground - surface info"))
 	language.Add("tool.proptire.reload", L("Вернуть изначальную коллизию", "Restore the original collision"))
 end
 
@@ -122,6 +122,8 @@ function TOOL:RightClick(trace)
 		ply:ChatPrint(string.format(L("Вес на шинах: %.0f кг, шин: %d (замороженное, без гравитации, NoCollide и AdvBallsocket «только вращение» не считаются)",
 			"Weight on tires: %.0f kg, tires: %d (frozen, gravity-off, NoCollide and rotation-only AdvBallsocket are not counted)"),
 			T.mass or 0, T.ntires or 0))
+		ply:ChatPrint(IsValid(T.plate) and string.format(L("Главная плата: [%d]", "Main plate: [%d]"), T.plate:EntIndex())
+			or L("Главная плата: нет (лучи вниз по миру)", "Main plate: none (rays point down in world space)"))
 		local off = L("выкл", "off")
 		ply:ChatPrint(string.format(L("Звуки: %s, пыль: %s, следы: %s", "Sounds: %s, dust: %s, marks: %s"),
 			T.sounds and SND_NAMES[T.sndset] or off,
@@ -148,6 +150,18 @@ function TOOL:RightClick(trace)
 			T.dbgPly = ply
 			ply:ChatPrint(L("Отладка шины включена (ПКМ ещё раз - выключить)", "Tire debug on (right-click again to turn off)"))
 		end
+	elseif IsValid(ent) and not ent:IsPlayer() and not ent:IsNPC() and ent:GetMoveType() == MOVETYPE_VPHYSICS then
+		local on = not ent.PropTirePlate
+		PropTire.SetPlate(ent, on)
+		if on then
+			local d = ent.PropTirePlate
+			ply:ChatPrint(string.format(L("Главная плата: [%d], низ - её %s%s. Лучи шин этой машины смотрят вниз относительно неё",
+				"Main plate: [%d], down = its %s%s. The tires of this vehicle cast their rays down relative to it"),
+				ent:EntIndex(), d.sign < 0 and "-" or "+", PropTire.AXIS_NAMES[d.axis]))
+		else
+			ply:ChatPrint(L("Отметка главной платы снята, лучи шин - вниз по миру", "Main plate unmarked, tire rays point down in world space"))
+		end
+		return true
 	else
 		local mat = PropTire.TraceMat(trace)
 		local mu = PropTire.Friction(self:GetClientInfo("tread"), mat, self:GetClientNumber("pres"))
@@ -516,8 +530,10 @@ function TOOL.BuildCPanel(panel)
 	axis:AddChoice("Y", "2")
 	axis:AddChoice("Z", "3")
 
-	panel:Help(L("Связи пропа сохраняются, масса и заморозка тоже. Нагрузку на шину аддон считает сам раз в секунду: масса конструкции / число шин.",
-		"The prop keeps its constraints, mass and freeze state. The addon computes the tire load itself once a second: contraption mass / number of tires."))
+	panel:Help(L("Связи пропа сохраняются, масса и заморозка тоже. Нагрузку на шину аддон считает сам: вес, который реально лежит на колёсах; с ходом шины - по силам пружин.",
+		"The prop keeps its constraints, mass and freeze state. The addon computes the tire load itself: the weight that really rests on the wheels; with tire travel it is shared by spring force."))
+	panel:Help(L("ПКМ по главной плате машины (машина стоит ровно): лучи шин смотрят вниз относительно неё - на виражах, стенах и петлях. Повторный ПКМ снимает отметку.",
+		"Right-click the vehicle's main plate (with the vehicle standing level): tire rays then point down relative to it - on banks, walls and loops. Right-click again to unmark it."))
 	panel:Help(L("Идея - аддоны Advanced Tire (Tibbles) и Make Spherical (Falcqn). Модель шины - «магическая формула» Пасейки.",
 		"Inspired by the Advanced Tire (Tibbles) and Make Spherical (Falcqn) addons. Tire model: Pacejka Magic Formula."))
 

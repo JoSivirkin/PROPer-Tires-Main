@@ -17,7 +17,7 @@ end
 
 e2function number entity:propTireLoad()
 	local T = Tire(this)
-	return T and T.load or 0
+	return T and (T.curLoad or T.load) or 0
 end
 
 e2function number entity:propTireSlip()
