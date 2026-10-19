@@ -1,0 +1,6 @@
+{
+	"title": "PROPer Tires",
+	"type": "tool",
+	"tags": [ "build", "realism" ],
+	"ignore": [ "tools/*", "*.md", "*.ps1", "*.psd" ]
+}
