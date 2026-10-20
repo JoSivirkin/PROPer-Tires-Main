@@ -29,7 +29,7 @@ function PropTire.CtrlDetach(ent)
 	local T = ent.PropTire
 	if not T or not T.ctrlPhys then return end
 	if IsValid(ctrl) and T.ctrlGen == ctrlGen and IsValid(T.ctrlPhys) then ctrl:RemoveFromMotionController(T.ctrlPhys) end
-	T.ctrlPhys, T.springA = nil, nil
+	T.ctrlPhys, T.springS = nil, nil
 end
 
 local function CtrlActive()
@@ -56,6 +56,10 @@ local RELAX = 0.5
 local ALPHA_MAX = 1.55
 local SPRING_DAMP = 0.5
 local SPRING_DAMP_REST = 1
+local DAMP_BUMP = 0.35
+local BUMP_ZONE = 0.3
+local BUMP_MULT = 4
+local RISE = 0.5
 local VP_JUMP = 1.27
 local SPRING_CAP = 0.8
 local LOAD_TAU = 0.1
@@ -354,8 +358,10 @@ function PropTire.UpdateLoads()
 end
 
 function PropTire.QueueLoads()
-	timer.Create("PropTireLoads", 0.5, 1, PropTire.UpdateLoads)
+	timer.Create("PropTireLoadsQueue", 0.5, 1, PropTire.UpdateLoads)
 end
+
+timer.Create("PropTireLoads", 1, 0, PropTire.UpdateLoads)
 
 hook.Add("AdvDupe_FinishPasting", "PropTire", PropTire.QueueLoads)
 hook.Add("PlayerUnfrozeObject", "PropTire", function() PropTire.QueueLoads() end)
@@ -575,7 +581,7 @@ function PropTire.Apply(ent, data, ply)
 	data.radius = math.Clamp(tonumber(data.radius) or 0, 0, 200)
 	data.width = math.Clamp(tonumber(data.width) or 0, 0, 15)
 	data.pres = math.Clamp(tonumber(data.pres) or 20, 5, 55)
-	data.travel = math.Clamp(math.Round(tonumber(data.travel) or 0), 0, 30)
+	data.travel = math.Clamp(math.Round(tonumber(data.travel) or 0), 0, 50)
 	data.axis = math.Clamp(math.floor(tonumber(data.axis) or 0), 0, 3)
 	if not TREADS[data.tread] then data.tread = "sport" end
 	data.sounds = data.sounds ~= false
@@ -827,11 +833,34 @@ end
 local function FindContacts(T, pos, a, d, tr)
 	local contacts = {}
 	local reach = T.susp and T.free or T.rs + MARGIN
-	if tr.Hit then
+	if T.susp then
+		local hw = T.wid * 0.4
+		local sum, best, bestC = 0, nil, 0
+		for i = -1, 1 do
+			local t = tr
+			if i ~= 0 then
+				local s = pos + a * (hw * i)
+				TR.start = s
+				TR.endpos = s + d * (T.rs * 2 + MARGIN)
+				t = util.TraceLine(TR)
+			end
+			if t.Hit and not t.StartSolid then
+				local cc = T.free - (t.StartPos - t.HitPos):Dot(t.HitNormal)
+				if cc > 0 then
+					sum = sum + cc
+					if cc > bestC or not best then best, bestC = t, cc end
+				end
+			end
+		end
+		if best and sum > 0 then
+			local n = (tr.Hit and not tr.StartSolid) and tr.HitNormal or best.HitNormal
+			contacts[1] = { n = n, sn = n, dist = T.free - sum / 3, ent = best.Entity, mat = PropTire.TraceMat(best), w = max(-n:Dot(d), 0.05) }
+		end
+	elseif tr.Hit then
 		local n = tr.HitNormal
 		local dist = (pos - tr.HitPos):Dot(n)
-		if dist <= reach and (not T.susp or dist < T.free) then
-			contacts[1] = { n = n, dist = dist, ent = tr.Entity, mat = PropTire.TraceMat(tr), w = max(-n:Dot(d), 0.05) }
+		if dist <= reach then
+			contacts[1] = { n = n, sn = n, dist = dist, ent = tr.Entity, mat = PropTire.TraceMat(tr), w = max(-n:Dot(d), 0.05) }
 		end
 	end
 	if T.slow and not T.susp then return contacts end
@@ -842,15 +871,16 @@ local function FindContacts(T, pos, a, d, tr)
 		TR.endpos = pos + dir * (T.free + MARGIN)
 		local st = util.TraceLine(TR)
 		if st.Hit and not st.StartSolid then
-			local n = st.HitNormal
-			local dist = (pos - st.HitPos):Dot(n)
-			if n:Dot(dir) < -0.2 and (not T.susp or dist < T.free) then
+			local sn = st.HitNormal
+			if sn:Dot(dir) < -0.2 then
 				local dup = false
 				for _, c in ipairs(contacts) do
-					if n:Dot(c.n) > 0.98 then dup = true break end
+					if sn:Dot(c.sn) > 0.98 then dup = true break end
 				end
-				if not dup then
-					contacts[#contacts + 1] = { n = n, dist = dist, ent = st.Entity, mat = PropTire.TraceMat(st), w = max(-n:Dot(d), SIDE_W) }
+				local n, dist = sn, (pos - st.HitPos):Dot(sn)
+				if T.susp then n, dist = -dir, (pos - st.HitPos):Length() end
+				if not dup and (not T.susp or dist < T.free) then
+					contacts[#contacts + 1] = { n = n, sn = sn, dist = dist, ent = st.Entity, mat = PropTire.TraceMat(st), w = max(-n:Dot(d), SIDE_W), side = true }
 				end
 			end
 		end
@@ -881,8 +911,16 @@ local function Spring(T, phys, pos, vel, contacts, dt)
 	if not single then T.ccPrev = nil end
 	local sum, comp = 0, 0
 	local Fv = Vector(0, 0, 0)
+	local range = T.free - T.rphys
+	local bz = range * BUMP_ZONE
+	local S = { free = T.free, k = kS, c = cS, cap = T.load, list = {},
+		bs = range - bz, bzm = bz * U, kp = BUMP_MULT * T.load / (bz * U) ^ 2 }
+	local kpTick = min(S.kp, m / (dt * dt) / max(S.bzm, 1e-3))
 	for _, c in ipairs(contacts) do
 		local p = pos - c.n * c.dist
+		local gp = IsValid(c.ent) and c.ent:GetPhysicsObject()
+		local sc = c.side and c.w or 1
+		S.list[#S.list + 1] = { n = c.n, p = p, gp = gp and IsValid(gp) and gp or nil, s = sc }
 		local cc = T.free - c.dist
 		local vn = -RelVel(vel, c, p):Dot(c.n) * U
 		if single then
@@ -894,25 +932,67 @@ local function Spring(T, phys, pos, vel, contacts, dt)
 			end
 			T.ccPrev = cc
 		end
-		local F = max(kS * (cc * U + vn * dt * 0.5) + cD * vn, 0)
+		local bump = cc > S.bs and kpTick * ((cc - S.bs) * U) ^ 2 or 0
+		local F = max(kS * (cc * U + vn * dt * 0.5) + bump + cD * vn, 0) * sc
 		T.dVn = vn / U
 		c.F = F
 		sum = sum + F
 		comp = max(comp, T.free - c.dist)
 		if F > 0 then
 			Fv = Fv + c.n * F
-			local gp = IsValid(c.ent) and c.ent:GetPhysicsObject()
 			if gp and IsValid(gp) and gp:IsMoveable() then gp:ApplyForceOffset(c.n * (-F * k), p) end
 		end
 	end
 	if CtrlActive() and T.ctrlPhys == phys then
-		T.springA = Fv / (m * U)
+		T.springS = S
 	else
-		T.springA = nil
+		T.springS = nil
 		if sum > 0 then phys:ApplyForceCenter(Fv * k) end
 	end
 	T.dF, T.dComp = sum, comp
 	return sum
+end
+
+function PropTire.SpringStep(phys, dt)
+	PropTire.ctrlTick = engine.TickCount()
+	local e = phys:GetEntity()
+	local T = IsValid(e) and e.PropTire
+	local S = T and T.springS
+	if not S then
+		if T then T.psiF = 0 end
+		return nil
+	end
+	local pos, vel, m = phys:GetPos(), phys:GetVelocity(), phys:GetMass()
+	local cD = S.c / (1 + S.c * dt / m)
+	local Fv, Ftot, vDown = Vector(0, 0, 0), 0, 0
+	for _, c in ipairs(S.list) do
+		local dist = (pos - c.p):Dot(c.n)
+		local cc = S.free - dist
+		if cc > 0 then
+			local v = vel
+			if c.gp and IsValid(c.gp) then v = v - c.gp:GetVelocityAtPoint(pos - c.n * dist) end
+			local vn = v:Dot(c.n)
+			if -vn > vDown then vDown = -vn end
+			local Fd = math.Clamp(-cD * vn * U * (vn < 0 and DAMP_BUMP or 1), -S.cap, S.cap)
+			local bump = cc > S.bs and min(S.kp, m / (dt * dt) / max(S.bzm, 1e-3)) * ((cc - S.bs) * U) ^ 2 or 0
+			local F = (S.k * cc * U + bump + Fd) * c.s
+			if F > 0 then
+				Fv = Fv + c.n * F
+				Ftot = Ftot + F
+			end
+		end
+	end
+	if Ftot <= 0 then
+		T.psiF = 0
+		return nil
+	end
+	local limit = (T.psiF or 0) + S.k * vDown * U * dt * 2 + RISE * S.cap
+	if Ftot > limit then
+		Fv = Fv * (limit / Ftot)
+		Ftot = limit
+	end
+	T.psiF = Ftot
+	return Fv / (m * U)
 end
 
 local function ContactPoint(T, pos, c)
@@ -923,7 +1003,7 @@ local function Simulate(ent, T, dt)
 	T.skid = 0
 	T.ground, T.surf, T.slip, T.alpha, T.fx, T.fy, T.mu, T.groundV = false, "", 0, 0, 0, 0, 0, 0
 	T.wheelV, T.hP, T.hV, T.hCool, T.fvec, T.contacts, T.curLoad = 0, 0, 0, 1, nil, 0, nil
-	T.springA = nil
+	T.springS = nil
 	local wPrev, dwOurs = T.wPrev, T.dwOurs or 0
 	T.wPrev, T.dwOurs = nil, 0
 	local phys = ent:GetPhysicsObject()
@@ -1053,6 +1133,7 @@ local function Simulate(ent, T, dt)
 			local s = math.Clamp((linvel - fv) / max(abs(fv), abs(linvel), V0), -0.99, 0.99)
 			local alpha = min(atan(abs(lv) / max(abs(fv), V0)), ALPHA_MAX)
 			local cl = (T.susp and Fs > 0) and N * c.F / Fs or N * c.w / sumW
+			if c.side then cl = min(cl, N * c.w / sumW) end
 			local fx, fy = TireModel(cl, T.wid, T.pres, mu, s, alpha)
 			fy = fy * lat
 			local jxMax = RELAX * abs(linvel - fv) * mx
@@ -1108,7 +1189,7 @@ timer.Create("PropTireDebug", 1, 0, function()
 					", пружина %.0f Н, сжатие %.1f из %.1f, верт. %.1f юн/с, нагрузка %.0f Н (доля %.0f)",
 					", spring %.0f N, compression %.1f of %.1f, vertical %.1f u/s, load %.0f N (share %.0f)"),
 					T.dF or 0, T.dComp or 0, T.free - T.rphys, T.dVn or 0, T.curLoad or 0, T.load)
-					.. (T.springA and PropTire.L(ply, ", по шагам физики", ", per physics step") or "")
+					.. (T.springS and PropTire.L(ply, ", по шагам физики", ", per physics step") or "")
 			end
 			ply:ChatPrint(line)
 		end

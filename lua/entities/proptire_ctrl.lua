@@ -21,10 +21,7 @@ function ENT:UpdateTransmitState()
 end
 
 function ENT:PhysicsSimulate(phys, dt)
-	PropTire.ctrlTick = engine.TickCount()
-	local e = phys:GetEntity()
-	local T = IsValid(e) and e.PropTire
-	local a = T and T.springA
+	local a = PropTire and PropTire.SpringStep and PropTire.SpringStep(phys, dt)
 	if not a then return SIM_NOTHING end
 	return vector_origin, a, SIM_GLOBAL_ACCELERATION
 end

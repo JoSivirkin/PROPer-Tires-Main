@@ -491,7 +491,7 @@ function TOOL.BuildCPanel(panel)
 	panel:NumSlider(L("Ширина пятна", "Patch width"), "proptire_width", 0, 15, 1)
 	panel:Help(L("0 - по модели", "0 = from the model"))
 	panel:NumSlider(L("Давление, PSI", "Pressure, PSI"), "proptire_pres", 5, 55, 0)
-	panel:NumSlider(L("Ход шины, %", "Tire travel, %"), "proptire_travel", 0, 30, 0)
+	panel:NumSlider(L("Ход шины, %", "Tire travel, %"), "proptire_travel", 0, 50, 0)
 	panel:NumSlider(L("Сцепление, %", "Grip, %"), "proptire_grip", 50, 500, 0)
 	panel:Help(L("Давление: выше - шина жёстче, отклик резче; ниже - мягче, а на грунте, песке, траве и снегу цепче (до +15%). Ширина пятна: шире - цепче (до ±10%).",
 		"Pressure: higher - stiffer tire, sharper response; lower - softer, with more grip on dirt, sand, grass and snow (up to +15%). Contact patch width: wider - more grip (up to ±10%)."))
