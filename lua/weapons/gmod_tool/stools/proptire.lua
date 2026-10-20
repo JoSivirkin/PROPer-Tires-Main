@@ -21,6 +21,7 @@ TOOL.ClientConVar = {
 	markset = "proper",
 	grip = "300",
 	heat = "0",
+	heatmodel = "over",
 	heatrate = "100",
 	coolrate = "100",
 }
@@ -94,6 +95,7 @@ function TOOL:LeftClick(trace)
 		markset = self:GetClientInfo("markset"),
 		grip = self:GetClientNumber("grip", 300),
 		heat = self:GetClientNumber("heat") ~= 0,
+		heatmodel = self:GetClientInfo("heatmodel"),
 		heatrate = self:GetClientNumber("heatrate", 100),
 		coolrate = self:GetClientNumber("coolrate", 100),
 	}, self:GetOwner())
@@ -130,10 +132,16 @@ function TOOL:RightClick(trace)
 			T.dust and (DUST_NAMES[T.dustset] .. L(", размер ", ", size ") .. T.dustsize) or off,
 			T.marks and MARK_NAMES[T.markset] or off))
 		if T.heat then
-			ply:ChatPrint(string.format(L("Нагрев: %.0f°C (предел %d°C), нагрев %d%%, остывание %d%%",
-				"Heating: %.0f°C (limit %d°C), heating %d%%, cooling %d%%"),
-				T.temp, PropTire.HEAT_LIMIT[T.tread] or PropTire.HEAT_LIMIT.sport,
-				math.Round(T.heatrate * 100), math.Round(T.coolrate * 100)))
+			local m = PropTire.HEAT_MODELS[T.hmodel] or PropTire.HEAT_MODELS.over
+			ply:ChatPrint(string.format(L("Нагрев: %.0f°C, сцепление x%.2f, %s, нагрев %d%%, остывание %d%%",
+				"Heating: %.0f°C, grip x%.2f, %s, heating %d%%, cooling %d%%"),
+				T.temp, PropTire.HeatGrip(T), L(m.ru, m.en), math.Round(T.heatrate * 100), math.Round(T.coolrate * 100)))
+			local text = string.format(L("Предел %d°C (+%d°C до 20%%)", "Limit %d°C (+%d°C to 20%%)"),
+				PropTire.HeatLimit(T), PropTire.HeatSpan(T.tread))
+			local win = PropTire.HeatWindow(T.tread, T.hmodel == "warm")
+			if win > PropTire.AMBIENT then text = text .. string.format(L(", полное сцепление с %d°C", ", full grip from %d°C"), win) end
+			if T.warm then text = text .. string.format(L(", грелка %.0f°C", ", warmer %.0f°C"), math.min(T.warm, PropTire.HeatLimit(T))) end
+			ply:ChatPrint(text)
 		else
 			ply:ChatPrint(L("Нагрев: выкл", "Heating: off"))
 		end
@@ -478,6 +486,60 @@ local TREAD_TEXT = {
 	drift = { "Дрифтовый: на 30% меньше бокового сцепления, легко уходит в занос.", "Drift: 30% less sideways grip, slides into a drift easily." },
 }
 
+local function HeatGraph(panel)
+	local g = vgui.Create("DPanel")
+	g:SetTall(110)
+	g.Paint = function(self, w, h)
+		local id = GetConVarString("proptire_tread")
+		if not PropTire.HEAT_LIMIT[id] then id = "sport" end
+		local warm = PropTire.HeatModel(GetConVarString("proptire_heatmodel")) == "warm"
+		local lim = PropTire.HEAT_LIMIT[id]
+		local t0, t1 = PropTire.AMBIENT, lim + PropTire.HeatSpan(id) + 10
+		local sk = self:GetSkin()
+		local ink = sk and sk.Colours and sk.Colours.Label and sk.Colours.Label.Dark or color_black
+		local x0, y0, x1, y1 = 34, 7, w - 4, h - 16
+		local pw, ph = x1 - x0, y1 - y0
+		local function X(t) return x0 + (t - t0) / (t1 - t0) * pw end
+		surface.SetDrawColor(0, 0, 0, 25)
+		surface.DrawRect(x0, y0, pw, ph)
+		surface.SetFont("DermaDefault")
+		surface.SetTextColor(ink)
+		for _, v in ipairs({ 0, 0.5, 1 }) do
+			local y = math.Round(y1 - v * ph)
+			surface.SetDrawColor(0, 0, 0, 40)
+			surface.DrawLine(x0, y, x1, y)
+			local s = math.Round(v * 100) .. "%"
+			local tw, th = surface.GetTextSize(s)
+			surface.SetTextPos(x0 - tw - 4, y - th / 2)
+			surface.DrawText(s)
+		end
+		for t = 20, t1, 20 do
+			local s = tostring(t)
+			local tw = surface.GetTextSize(s)
+			surface.SetTextPos(math.min(X(t) - tw / 2, w - tw), y1 + 2)
+			surface.DrawText(s)
+		end
+		local lx = math.Round(X(lim))
+		surface.SetDrawColor(255, 140, 0, 110)
+		surface.DrawLine(lx, y0, lx, y1)
+		local s = lim .. "°C"
+		local tw, th = surface.GetTextSize(s)
+		surface.SetTextPos(lx - tw - 3, y1 - th - 2)
+		surface.DrawText(s)
+		surface.SetDrawColor(255, 140, 0)
+		local px, py
+		for x = 0, pw, 2 do
+			local y = y1 - PropTire.HeatCurve(t0 + (t1 - t0) * x / pw, id, warm) * ph
+			if px then
+				surface.DrawLine(px, py, x0 + x, y)
+				surface.DrawLine(px, py + 1, x0 + x, y + 1)
+			end
+			px, py = x0 + x, y
+		end
+	end
+	panel:AddItem(g)
+end
+
 function TOOL.BuildCPanel(panel)
 	panel:Help("#tool.proptire.desc")
 	panel:AddControl("ComboBox", {
@@ -502,13 +564,7 @@ function TOOL.BuildCPanel(panel)
 
 	local tread = panel:ComboBox(L("Протектор", "Tread"), "proptire_tread")
 	tread:SetSortItems(false)
-	tread:AddChoice(L("Гоночный", "Race"), "race")
-	tread:AddChoice(L("Спортивный", "Sport"), "sport")
-	tread:AddChoice(L("Грунтовый", "Off-road"), "dirt")
-	tread:AddChoice(L("Армейский", "Military"), "military")
-	tread:AddChoice(L("Грязевой", "Mud"), "mud")
-	tread:AddChoice(L("Слик", "Slick"), "slick")
-	tread:AddChoice(L("Дрифтовый", "Drift"), "drift")
+	for _, t in ipairs(PropTire.TREAD_LIST) do tread:AddChoice(L(t.ru, t.en), t.id) end
 	local treadHelp = panel:Help("")
 	local treadShown
 	local helpThink = treadHelp.Think
@@ -517,11 +573,11 @@ function TOOL.BuildCPanel(panel)
 		if id ~= treadShown then
 			treadShown = id
 			local text = TREAD_TEXT[id] or TREAD_TEXT.sport
-			local limit = PropTire.HEAT_LIMIT[id] or PropTire.HEAT_LIMIT.sport
-			self:SetText(L(text[1], text[2]) .. "\n" .. string.format(L("Перегревается выше %d°C.", "Overheats above %d°C."), limit))
+			self:SetText(L(text[1], text[2]))
 		end
 		if helpThink then helpThink(self) end
 	end
+	HeatGraph(panel)
 
 	local axis = panel:ComboBox(L("Ось колеса", "Wheel axis"), "proptire_axis")
 	axis:SetSortItems(false)
@@ -539,8 +595,16 @@ function TOOL.BuildCPanel(panel)
 
 	Section(panel, L("Нагрев шин", "Tire heating"))
 	panel:CheckBox(L("Включить", "Enable"), "proptire_heat")
+	local model = panel:ComboBox(L("Модель", "Model"), "proptire_heatmodel")
+	model:SetSortItems(false)
+	for _, id in ipairs({ "over", "warm" }) do
+		local m = PropTire.HEAT_MODELS[id]
+		model:AddChoice(L(m.ru, m.en), id)
+	end
 	panel:NumSlider(L("Нагрев, %", "Heating, %"), "proptire_heatrate", 10, 200, 0)
 	panel:NumSlider(L("Остывание, %", "Cooling, %"), "proptire_coolrate", 10, 200, 0)
+	panel:Help(L("Шину греют скольжение и качение под нагрузкой (ниже давление - сильнее). Грелка - командой E2 e:propTireWarmer(°C) или Starfall ent:setPropTireWarmer(°C), работает только стоя.",
+		"Slip and rolling under load heat the tire (lower pressure heats more). Tire warmers: E2 e:propTireWarmer(°C) or Starfall ent:setPropTireWarmer(°C), standing still only."))
 
 	Section(panel, L("Звуки шин", "Tire sounds"))
 	panel:CheckBox(L("Включить", "Enable"), "proptire_sounds")

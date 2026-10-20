@@ -65,6 +65,35 @@ e2function number entity:propTireTemp()
 	return T and PropTire.Temp(T) or 0
 end
 
+e2function number entity:propTireHeatGrip()
+	local T = Tire(this)
+	return T and PropTire.HeatGrip(T) or 0
+end
+
+e2function number entity:propTireHeatLimit()
+	local T = Tire(this)
+	return T and PropTire.HeatLimit(T) or 0
+end
+
+e2function number entity:propTireHeatWindow()
+	local T = Tire(this)
+	return T and PropTire.HeatWindow(T.tread, T.hmodel == "warm") or 0
+end
+
+e2function number entity:propTireWarmer()
+	local T = Tire(this)
+	return T and T.warm or 0
+end
+
+__e2setcost(5)
+
+e2function void entity:propTireWarmer(number temp)
+	if not Tire(this) or not E2Lib.isOwner(self, this) then return end
+	PropTire.SetWarmer(this, temp)
+end
+
+__e2setcost(2)
+
 e2function number entity:propTireRadius()
 	local T = Tire(this)
 	return T and T.radius or 0

@@ -77,18 +77,22 @@ local function ServerSound(path)
 	return path
 end
 local SKID_MIN = 60
-local SKID_FULL = 300
+local SKID_FROM = 0.8
+local SKID_TO = 2
+local PEAK_X = 1.885
+local PEAK_Y = 3.53
 
-local AMBIENT = 20
+local AMBIENT = PropTire.AMBIENT
 local TEMP_MAX = 250
 local HEAT_K = 0.8
-local ROLL_K = 0.02
+local ROLL_K = 0.12
+local FLEX_MAX = 2
 local COOL_0 = 0.03
 local COOL_V = 0.003
 local COOL_SURF = { dirt = 2, sand = 2, grass = 2, snow = 3, water = 4 }
-local HEAT_DROP = 0.8
-local HEAT_SPAN = 20
-PropTire.AMBIENT = AMBIENT
+local WARM_RATE = 5
+local WARM_V = 0.3
+local THERMAL = 3
 
 PropTire.TREADS = {
 	race     = { asphalt = 1.15, dirt = 0.5,  sand = 0.4,  grass = 0.45, snow = 0.25, other = 0.7 },
@@ -444,7 +448,7 @@ function PropTire.RemoveMS(ent)
 end
 
 function PropTire.SkidLevel(T)
-	return math.Clamp(((T.skid or 0) - SKID_MIN) / (SKID_FULL - SKID_MIN), 0, 1)
+	return T.skid or 0
 end
 
 function PropTire.Temp(T)
@@ -454,10 +458,20 @@ end
 local function HeatLimit(T)
 	return PropTire.HEAT_LIMIT[T.tread] or PropTire.HEAT_LIMIT.sport
 end
+PropTire.HeatLimit = HeatLimit
 
 local function HeatGrip(T)
 	if not T.heat then return 1 end
-	return 1 - HEAT_DROP * math.Clamp((T.temp - HeatLimit(T)) / HEAT_SPAN, 0, 1)
+	return PropTire.HeatCurve(T.temp, T.tread, T.hmodel == "warm")
+end
+PropTire.HeatGrip = HeatGrip
+
+function PropTire.SetWarmer(ent, temp)
+	local T = IsValid(ent) and ent.PropTire
+	if not T then return false end
+	temp = tonumber(temp) or 0
+	T.warm = temp > AMBIENT and temp or nil
+	return true
 end
 
 local SLOW_CANDIDATES = { "rubber", "rubbertire", "default", "plastic", "metal", "wood", "concrete", "dirt",
@@ -488,15 +502,20 @@ end
 
 local function UpdateHeat(T, dt)
 	if not T.heat then return end
-	local t = T.temp or AMBIENT
-	t = t + (HEAT_K * (T.hP or 0) + ROLL_K * abs(T.wheelV or 0) * U) * T.heatrate * dt
-	t = t - (t - AMBIENT) * (COOL_0 + COOL_V * (T.hV or 0)) * (T.hCool or 1) * T.coolrate * dt
+	local t0 = T.temp or AMBIENT
+	local flex = T.curLoad and min(T.curLoad / max(T.load, 1), FLEX_MAX) * (60 - T.pres) / 40 or 0
+	local t = t0 + (HEAT_K * (T.hP or 0) + ROLL_K * flex * abs(T.wheelV or 0) * U) * T.heatrate * dt / THERMAL
+	t = t - (t - AMBIENT) * (COOL_0 + COOL_V * (T.hV or 0)) * (T.hCool or 1) * T.coolrate * dt / THERMAL
+	local w = T.warm and min(T.warm, HeatLimit(T))
+	if w and t < w and PropTire.cvWarmer:GetBool() and (T.hV or 0) < WARM_V and abs(T.wheelV or 0) * U < WARM_V then
+		t = min(w, max(t, t0 + WARM_RATE * dt))
+	end
 	T.temp = math.Clamp(t, AMBIENT, TEMP_MAX)
 end
 
 local function UpdateSkid(ent, T)
 	if T.heat then
-		local h = math.Round(math.Clamp(0.6 + 0.4 * (T.temp - HeatLimit(T)) / HEAT_SPAN, 0, 1), 1)
+		local h = math.Round(math.Clamp(0.6 + 0.4 * (T.temp - HeatLimit(T)) / PropTire.HeatSpan(T.tread), 0, 1), 1)
 		if h ~= (T.heatQ or 0) then
 			T.heatQ = h
 			ent:SetNW2Float("PropTireHeat", h)
@@ -530,6 +549,12 @@ function PropTire.Info(ent)
 		wheelSpeed = T.wheelV or 0,
 		groundSpeed = T.groundV or 0,
 		temp = PropTire.Temp(T),
+		heating = T.heat or false,
+		heatModel = T.hmodel or "over",
+		heatLimit = HeatLimit(T),
+		heatWindow = PropTire.HeatWindow(T.tread, T.hmodel == "warm"),
+		heatGrip = HeatGrip(T),
+		warmer = T.warm or 0,
 		radius = T.radius,
 		width = T.wid,
 		pressure = T.pres,
@@ -564,6 +589,55 @@ local function LimitNotice(ply, key, ru, en, value)
 	ply:ChatPrint(string.format(PropTire.L(ply, ru, en), value))
 end
 
+local function Named(ply, t)
+	return t and PropTire.L(ply, t.ru, t.en) or "?"
+end
+
+local function AllowedTread(id)
+	if PropTire.TreadAllowed(id) then return id end
+	if PropTire.TreadAllowed("sport") then return "sport" end
+	for _, t in ipairs(PropTire.TREAD_LIST) do
+		if PropTire.TreadAllowed(t.id) then return t.id end
+	end
+	return "sport"
+end
+
+local function SetFX(ent, data, heat)
+	local fx = (data.sounds and 1 or 0) + (data.marks and 2 or 0) + (heat and 4 or 0) + (data.dust and 8 or 0)
+		+ SND_SETS[data.sndset] * 16 + DUST_SETS[data.dustset] * 128 + MARK_SETS[data.markset] * 512
+		+ data.dustsize * 1024
+	if ent:GetNW2Int("PropTireFX", -1) ~= fx then ent:SetNW2Int("PropTireFX", fx) end
+end
+
+local function ServerRules(ent, T, data, ply)
+	T.tread = AllowedTread(data.tread)
+	if T.tread ~= data.tread then
+		LimitNotice(ply, "tread", "Протектор запрещён сервером, стоит: %s", "Tread not allowed by the server, using: %s",
+			Named(ply, PropTire.TREAD_NAME[T.tread]))
+	end
+	if PropTire.cvForceHeat:GetInt() > 0 then
+		T.heat, T.hmodel, T.heatrate, T.coolrate = true, PropTire.HeatModel(), 1, 1
+		if not data.heat or data.heatmodel ~= T.hmodel or data.heatrate ~= 100 or data.coolrate ~= 100 then
+			LimitNotice(ply, "heat", "Нагрев шин задан сервером: %s, нагрев и остывание 100%%",
+				"Tire heating is set by the server: %s, heating and cooling 100%%", Named(ply, PropTire.HEAT_MODELS[T.hmodel]))
+		end
+	else
+		T.heat, T.hmodel, T.heatrate, T.coolrate = data.heat, data.heatmodel, data.heatrate / 100, data.coolrate / 100
+	end
+	if not T.heat and (T.heatQ or 0) ~= 0 then
+		T.heatQ = 0
+		ent:SetNW2Float("PropTireHeat", 0)
+	end
+	SetFX(ent, data, T.heat)
+end
+
+local function StartTemp(ent, T)
+	if T and T.temp then return T.temp end
+	local h = ent.PropTireLastHeat
+	if not h then return AMBIENT end
+	return AMBIENT + (h.temp - AMBIENT) * math.exp(-COOL_0 * (CurTime() - h.time) / THERMAL)
+end
+
 function PropTire.Apply(ent, data, ply)
 	local phys = ent:GetPhysicsObject()
 	if not IsValid(phys) then return end
@@ -593,6 +667,7 @@ function PropTire.Apply(ent, data, ply)
 	data.dustsize = math.Clamp(math.Round(tonumber(data.dustsize) or 10), 1, 10)
 	data.grip = math.Clamp(math.Round(tonumber(data.grip) or 300), 50, 500)
 	data.heat = data.heat == true
+	data.heatmodel = data.heatmodel == "warm" and "warm" or "over"
 	data.heatrate = math.Clamp(math.Round(tonumber(data.heatrate) or 100), 10, 200)
 	data.coolrate = math.Clamp(math.Round(tonumber(data.coolrate) or 100), 10, 200)
 	local custom = {}
@@ -640,7 +715,7 @@ function PropTire.Apply(ent, data, ply)
 	ent.PropTire = {
 		axis = axis, alocal = AXES[axis], radius = radius, rs = rs, wid = wid,
 		rphys = rphys, defl = defl, free = radius + defl, susp = travel > 0,
-		pres = data.pres, tread = data.tread,
+		pres = data.pres,
 		sounds = data.sounds, marks = data.marks, dust = data.dust,
 		sndset = data.sndset, dustset = data.dustset, markset = data.markset, dustsize = data.dustsize,
 		load = T and T.load or mass * Gravity(), own = T and T.own,
@@ -648,16 +723,13 @@ function PropTire.Apply(ent, data, ply)
 		filter = T and T.filter or MakeFilter(ent, T and T.own),
 		grip = grip / 100,
 		slow = true,
-		heat = data.heat, heatrate = data.heatrate / 100, coolrate = data.coolrate / 100,
-		temp = T and T.temp or AMBIENT,
+		temp = StartTemp(ent, T), warm = T and T.warm,
 	}
 	ent.PropTireData = data
+	ent.PropTireLastHeat = nil
 	Tires[ent] = true
 
-	local fx = (data.sounds and 1 or 0) + (data.marks and 2 or 0) + (data.heat and 4 or 0) + (data.dust and 8 or 0)
-		+ SND_SETS[data.sndset] * 16 + DUST_SETS[data.dustset] * 128 + MARK_SETS[data.markset] * 512
-		+ data.dustsize * 1024
-	ent:SetNW2Int("PropTireFX", fx)
+	ServerRules(ent, ent.PropTire, data, ply)
 	if IsValid(ply) then ent:SetNW2Entity("PropTireOwner", ply) end
 	for _, g in ipairs(PropTire.SURFACES) do
 		local c = data.sndset == "custom" and data.custom[g.id]
@@ -704,6 +776,8 @@ function PropTire.Restore(ent)
 		ent:RemoveCallback("PhysicsCollide", ent.PropTireCB)
 		ent.PropTireCB = nil
 	end
+	local T = ent.PropTire
+	if T and T.temp and T.temp > AMBIENT then ent.PropTireLastHeat = { temp = T.temp, time = CurTime() } end
 	Tires[ent] = nil
 	ent.PropTire = nil
 	ent.PropTireData = nil
@@ -742,6 +816,7 @@ local function ReapplyLimits()
 			else
 				T.wid, T.grip = wid, grip / 100
 				ent:SetNW2Float("PropTireW", wid)
+				ServerRules(ent, T, data, ent:GetNW2Entity("PropTireOwner"))
 			end
 		end
 	end
@@ -750,12 +825,21 @@ local function ReapplyLimits()
 	end
 end
 
-local LIMITS = { radius = cvMaxRadius, width = cvMaxWidth, grip = cvMaxGrip }
+local LIMITS = { radius = cvMaxRadius, width = cvMaxWidth, grip = cvMaxGrip, heat = PropTire.cvForceHeat, warmer = PropTire.cvWarmer }
 for _, cv in pairs(LIMITS) do
 	cvars.AddChangeCallback(cv:GetName(), function()
 		timer.Create("PropTireLimits", 0.2, 1, ReapplyLimits)
 	end, "PropTire")
 end
+cvars.AddChangeCallback(PropTire.cvTreads:GetName(), function()
+	timer.Create("PropTireLimits", 0.2, 1, ReapplyLimits)
+end, "PropTire")
+
+local FORCE_HEAT = {
+	[0] = { ru = "выбирают игроки", en = "players choose" },
+	[1] = { ru = "включён: только перегрев", en = "forced on: overheat only" },
+	[2] = { ru = "включён: прогрев + перегрев", en = "forced on: warm-up + overheat" },
+}
 
 concommand.Add("proptire_limit", function(ply, cmd, args)
 	local valid = IsValid(ply)
@@ -764,22 +848,44 @@ concommand.Add("proptire_limit", function(ply, cmd, args)
 	end
 	local L = function(ru, en) return PropTire.L(ply, ru, en) end
 	if not args[1] then
-		reply(string.format(L("PROPer Tires, ограничения сервера: радиус %g, ширина пятна %g, сцепление %g%%",
-			"PROPer Tires server limits: radius %g, patch width %g, grip %g%%"),
-			cvMaxRadius:GetFloat(), cvMaxWidth:GetFloat(), cvMaxGrip:GetFloat()))
+		local treads = string.Trim(PropTire.cvTreads:GetString())
+		reply(string.format(L("PROPer Tires, ограничения сервера: радиус %g, ширина пятна %g, сцепление %g%%, нагрев: %s, грелки: %s, протекторы: %s",
+			"PROPer Tires server limits: radius %g, patch width %g, grip %g%%, heating: %s, warmers: %s, treads: %s"),
+			cvMaxRadius:GetFloat(), cvMaxWidth:GetFloat(), cvMaxGrip:GetFloat(),
+			Named(ply, FORCE_HEAT[PropTire.cvForceHeat:GetInt()]),
+			PropTire.cvWarmer:GetBool() and L("разрешены", "allowed") or L("запрещены", "disabled"),
+			treads ~= "" and treads or L("все", "all")))
 		return
 	end
 	if valid and not ply:IsSuperAdmin() then
 		reply(L("PROPer Tires: менять ограничения может только суперадмин", "PROPer Tires: only superadmins can change the limits"))
 		return
 	end
+	local usage = L("Использование: proptire_limit <radius|width|grip> <значение>, proptire_limit heat <0|1|2>, proptire_limit warmer <0|1>, proptire_limit treads <протекторы через пробел|all>",
+		"Usage: proptire_limit <radius|width|grip> <value>, proptire_limit heat <0|1|2>, proptire_limit warmer <0|1>, proptire_limit treads <treads separated by spaces|all>")
+	if string.lower(args[1]) == "treads" then
+		local list = {}
+		for i = 2, #args do
+			local id = string.lower(args[i])
+			if TREADS[id] then list[#list + 1] = id end
+		end
+		if not list[1] and string.lower(args[2] or "") ~= "all" then
+			reply(usage .. " (race sport dirt military mud slick drift)")
+			return
+		end
+		local s = table.concat(list, " ")
+		RunConsoleCommand(PropTire.cvTreads:GetName(), s)
+		reply(string.format("PROPer Tires: %s = %s", PropTire.cvTreads:GetName(), s ~= "" and s or L("все", "all")))
+		return
+	end
 	local cv = LIMITS[string.lower(args[1])]
 	local v = tonumber(args[2])
 	if not cv or not v then
-		reply(L("Использование: proptire_limit <radius|width|grip> <значение>", "Usage: proptire_limit <radius|width|grip> <value>"))
+		reply(usage)
 		return
 	end
 	v = math.Clamp(v, cv:GetMin() or v, cv:GetMax() or v)
+	if cv == PropTire.cvForceHeat or cv == PropTire.cvWarmer then v = math.Round(v) end
 	RunConsoleCommand(cv:GetName(), tostring(v))
 	reply(string.format(L("PROPer Tires: %s = %g", "PROPer Tires: %s = %g"), cv:GetName(), v))
 end)
@@ -1120,6 +1226,8 @@ local function Simulate(ent, T, dt)
 
 	local lat = (TREADS[T.tread] or TREADS.sport).lat or 1
 	local fvec, skid, hP = Vector(0, 0, 0), 0, 0
+	local stiff = 0.6 + 0.8 * (T.pres - 5) / 50
+	local sPk, aPk = PEAK_X / (BX * stiff), PEAK_Y / (BY * stiff)
 
 	for _, c in ipairs(contacts) do
 		local f = a:Cross(c.n)
@@ -1150,7 +1258,9 @@ local function Simulate(ent, T, dt)
 			if jy > 0 then phys:ApplyForceCenter(l * jl) end
 			T.dwOurs = T.dwOurs + jx * spin
 			fvec = fvec + f * (jx / k) + l * (jl / k)
-			skid = max(skid, sqrt((linvel - fv) ^ 2 + lv ^ 2))
+			local over = sqrt((s / sPk) ^ 2 + (alpha / aPk) ^ 2)
+			local gate = min(sqrt((linvel - fv) ^ 2 + lv ^ 2) / SKID_MIN, 1)
+			skid = max(skid, math.Clamp((over - SKID_FROM) / (SKID_TO - SKID_FROM), 0, 1) * gate)
 			hP = hP + (abs(jx / k) * abs(linvel - fv) + abs(jl / k) * abs(lv)) * U
 			if c == prim then
 				T.dS, T.dFx, T.dJx, T.dJmax = s, fx, jx, jxMax

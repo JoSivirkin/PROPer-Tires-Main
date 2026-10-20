@@ -5,7 +5,75 @@ PropTire = PropTire or {}
 PropTire.SND_SETS = { hl2 = 0, glide = 1, simfphys = 2, custom = 3, ace = 5, lvs = 6 }
 PropTire.DUST_SETS = { glide = 0, simfphys = 1, proper = 2 }
 PropTire.MARK_SETS = { glide = 0, proper = 1 }
+PropTire.AMBIENT = 20
 PropTire.HEAT_LIMIT = { race = 110, sport = 95, dirt = 80, military = 120, mud = 75, slick = 120, drift = 100 }
+PropTire.HEAT_SPAN = { race = 15, sport = 20, dirt = 25, military = 30, mud = 25, slick = 12, drift = 18 }
+PropTire.HEAT_COLD = { race = 0.75, sport = 0.9, dirt = 0.95, military = 1, mud = 0.95, slick = 0.65, drift = 0.8 }
+PropTire.HEAT_WARM = { race = 75, sport = 50, dirt = 40, military = 20, mud = 40, slick = 90, drift = 65 }
+PropTire.HEAT_FLOOR = 0.2
+
+PropTire.TREAD_LIST = {
+	{ id = "race",     ru = "Гоночный",   en = "Race" },
+	{ id = "sport",    ru = "Спортивный", en = "Sport" },
+	{ id = "dirt",     ru = "Грунтовый",  en = "Off-road" },
+	{ id = "military", ru = "Армейский",  en = "Military" },
+	{ id = "mud",      ru = "Грязевой",   en = "Mud" },
+	{ id = "slick",    ru = "Слик",       en = "Slick" },
+	{ id = "drift",    ru = "Дрифтовый",  en = "Drift" },
+}
+PropTire.TREAD_NAME = {}
+for _, t in ipairs(PropTire.TREAD_LIST) do PropTire.TREAD_NAME[t.id] = t end
+
+PropTire.HEAT_MODELS = {
+	over = { ru = "Только перегрев",    en = "Overheat only" },
+	warm = { ru = "Прогрев + перегрев", en = "Warm-up + overheat" },
+}
+
+local REPL = bit.bor(FCVAR_REPLICATED, SERVER and FCVAR_ARCHIVE or 0)
+PropTire.cvForceHeat = CreateConVar("proptire_force_heat", "0", REPL,
+	"PROPer Tires: 0 = players choose, 1 = heating forced on (overheat only), 2 = heating forced on (warm-up + overheat)", 0, 2)
+PropTire.cvWarmer = CreateConVar("proptire_allow_warmer", "1", REPL, "PROPer Tires: allow tire warmers from E2 / Starfall", 0, 1)
+PropTire.cvTreads = CreateConVar("proptire_treads", "", REPL, "PROPer Tires: allowed treads, space separated (empty = all)")
+
+function PropTire.TreadAllowed(id)
+	local s = string.lower(PropTire.cvTreads:GetString())
+	if string.Trim(s) == "" then return true end
+	for w in string.gmatch(s, "[%w_]+") do
+		if w == id then return true end
+	end
+	return false
+end
+
+function PropTire.HeatModel(model)
+	local f = PropTire.cvForceHeat:GetInt()
+	if f > 0 then return f == 2 and "warm" or "over" end
+	return model == "warm" and "warm" or "over"
+end
+
+local function Smooth(x)
+	x = math.Clamp(x, 0, 1)
+	return x * x * (3 - 2 * x)
+end
+
+function PropTire.HeatSpan(tread)
+	return PropTire.HEAT_SPAN[tread] or PropTire.HEAT_SPAN.sport
+end
+
+function PropTire.HeatWindow(tread, warm)
+	if not warm then return PropTire.AMBIENT end
+	return PropTire.HEAT_WARM[tread] or PropTire.HEAT_WARM.sport
+end
+
+function PropTire.HeatCurve(temp, tread, warm)
+	local lim = PropTire.HEAT_LIMIT[tread] or PropTire.HEAT_LIMIT.sport
+	local g = 1 - (1 - PropTire.HEAT_FLOOR) * Smooth((temp - lim) / PropTire.HeatSpan(tread))
+	local win = PropTire.HeatWindow(tread, warm)
+	local cold = PropTire.HEAT_COLD[tread] or 1
+	if win > PropTire.AMBIENT and cold < 1 then
+		g = g * (cold + (1 - cold) * Smooth((temp - PropTire.AMBIENT) / (win - PropTire.AMBIENT)))
+	end
+	return g
+end
 
 PropTire.SURFACES = {
 	{ id = "asphalt", ru = "Асфальт / бетон", en = "Asphalt / concrete", mats = { MAT_CONCRETE, MAT_TILE } },
