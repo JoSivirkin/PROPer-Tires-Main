@@ -395,11 +395,11 @@ local function GlideDust(ent, C, tr, s, vel, speed, skid, base)
 	end
 end
 
-local function SimfDust(ent, C, contact, name, tr, s, speed, skid, r, dt, mul, size, own)
+local function SimfDust(ent, C, contact, name, tr, s, speed, skid, r, dt, mul, size, filesOnly)
 	if contact and speed > DUST_FROM and SIMF_DUST[name] then
 		C.dustR = r
 		if not (C.dust and C.dust:IsValid()) then
-			if own then LoadSimfParticles() end
+			if filesOnly then LoadSimfParticles() end
 			C.dust = CreateParticleSystem(ent, "WheelDust", PATTACH_CUSTOMORIGIN)
 			C.dustOn = C.dust ~= nil
 			if C.dust then C.dust:SetControlPoint(0, DustPos(ent, C)) end
@@ -414,7 +414,7 @@ local function SimfDust(ent, C, contact, name, tr, s, speed, skid, r, dt, mul, s
 
 	local heat = Heat(C, contact and SIMF_HARD[name] and skid > 0.1, skid, dt)
 	local dir = C.fwd and -C.fwd:GetNormalized() or vector_up
-	if own then
+	if filesOnly then
 		if heat > HEAT_SMOKE and contact then
 			PropTire.TireSmoke(tr.HitPos, dir, Ramp(heat, HEAT_SMOKE * 0.8, 1), size)
 		end

@@ -18,13 +18,6 @@ local mat = CreateMaterial("proptire_preview", "UnlitGeneric", {
 	["$ignorez"] = 1,
 })
 
-local function Usable(ent)
-	if not IsValid(ent) or ent:IsPlayer() or ent:IsNPC() then return false end
-	local class = ent:GetClass()
-	if string.find(class, "prop_vehicle_") or class == "prop_ragdoll" then return false end
-	return ent:GetMoveType() == MOVETYPE_VPHYSICS
-end
-
 local function Shape(ent)
 	if ent:GetNW2Int("PropTireFX", 0) ~= 0 then
 		local axis = ent:GetNW2Int("PropTireAxis", 0)
@@ -50,7 +43,7 @@ hook.Add("PostDrawTranslucentRenderables", "PropTirePreview", function(depth, sk
 	local wep = ply:GetActiveWeapon()
 	if not IsValid(wep) or wep:GetClass() ~= "gmod_tool" then return end
 	local ent = ply:GetEyeTrace().Entity
-	if not Usable(ent) then return end
+	if not PropTire.CanTire(ent) then return end
 	local axis, r, w = Shape(ent)
 	if not axis then return end
 

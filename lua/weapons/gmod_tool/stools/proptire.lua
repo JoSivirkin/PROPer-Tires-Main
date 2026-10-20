@@ -32,9 +32,30 @@ for _, g in ipairs(PropTire.SURFACES) do
 end
 local ConVarsDefault = TOOL:BuildConVarList()
 
-local SND_NAMES = { ace = "ACE", lvs = "LVS", hl2 = "HL2", glide = "Glide", simfphys = "Simfphys", custom = "Custom" }
-local DUST_NAMES = { proper = "Default", glide = "Glide", simfphys = "Simfphys" }
-local MARK_NAMES = { proper = "Default", glide = "Glide" }
+local SND_LIST = {
+	{ id = "hl2", name = "HL2" },
+	{ id = "ace", name = "ACE", need = "ace" },
+	{ id = "glide", name = "Glide", need = "glide" },
+	{ id = "simfphys", name = "Simfphys", need = "simfphys" },
+	{ id = "lvs", name = "LVS", need = "lvs" },
+	{ id = "custom", name = "Custom" },
+}
+local DUST_LIST = {
+	{ id = "proper", name = "Default" },
+	{ id = "glide", name = "Glide", need = "glide" },
+	{ id = "simfphys", name = "Simfphys", need = "simfphys" },
+}
+local MARK_LIST = {
+	{ id = "proper", name = "Default" },
+	{ id = "glide", name = "Glide", need = "glide" },
+}
+
+local function Names(list)
+	local t = {}
+	for _, o in ipairs(list) do t[o.id] = o.name end
+	return t
+end
+local SND_NAMES, DUST_NAMES, MARK_NAMES = Names(SND_LIST), Names(DUST_LIST), Names(MARK_LIST)
 
 TOOL.Information = {
 	{ name = "left" },
@@ -51,14 +72,7 @@ if CLIENT then
 	language.Add("tool.proptire.reload", L("Вернуть изначальную коллизию", "Restore the original collision"))
 end
 
-local function CanTire(ent)
-	if not IsValid(ent) or ent:IsPlayer() or ent:IsNPC() then return false end
-	local class = ent:GetClass()
-	if string.find(class, "prop_vehicle_") or class == "prop_ragdoll" then return false end
-	if ent:GetMoveType() ~= MOVETYPE_VPHYSICS then return false end
-	if SERVER and not IsValid(ent:GetPhysicsObject()) then return false end
-	return true
-end
+local CanTire = PropTire.CanTire
 
 function TOOL:LeftClick(trace)
 	local ent = trace.Entity
@@ -608,31 +622,17 @@ function TOOL.BuildCPanel(panel)
 
 	Section(panel, L("Звуки шин", "Tire sounds"))
 	panel:CheckBox(L("Включить", "Enable"), "proptire_sounds")
-	SetChoice(panel, "proptire_sndset", {
-		{ id = "hl2", name = "HL2" },
-		{ id = "ace", name = "ACE", need = "ace" },
-		{ id = "glide", name = "Glide", need = "glide" },
-		{ id = "simfphys", name = "Simfphys", need = "simfphys" },
-		{ id = "lvs", name = "LVS", need = "lvs" },
-		{ id = "custom", name = "Custom" },
-	})
+	SetChoice(panel, "proptire_sndset", SND_LIST)
 	panel:Button(L("Свои звуки по поверхностям...", "Custom sounds per surface...")).DoClick = OpenCustomWindow
 
 	Section(panel, L("Пыль и дым", "Dust and smoke"))
 	panel:CheckBox(L("Включить", "Enable"), "proptire_dust")
-	SetChoice(panel, "proptire_dustset", {
-		{ id = "proper", name = "Default" },
-		{ id = "glide", name = "Glide", need = "glide" },
-		{ id = "simfphys", name = "Simfphys", need = "simfphys" },
-	})
+	SetChoice(panel, "proptire_dustset", DUST_LIST)
 	panel:NumSlider(L("Размер", "Size"), "proptire_dustsize", 1, 10, 0)
 
 	Section(panel, L("Следы шин", "Tire marks"))
 	panel:CheckBox(L("Включить", "Enable"), "proptire_marks")
-	SetChoice(panel, "proptire_markset", {
-		{ id = "proper", name = "Default" },
-		{ id = "glide", name = "Glide", need = "glide" },
-	})
+	SetChoice(panel, "proptire_markset", MARK_LIST)
 	panel:NumSlider(L("Следов у себя, кусков", "Local mark pieces"), "proptire_marks_max", 64, 8192, 0)
 	panel:NumSlider(L("Следы живут, с", "Mark lifetime, s"), "proptire_marks_life", 5, 300, 0)
 	panel:CheckBox(L("Эффекты шин других игроков", "Other players' tire effects"), "proptire_others")

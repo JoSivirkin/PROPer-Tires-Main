@@ -131,6 +131,14 @@ function PropTire.CleanSoundPath(path)
 	return path
 end
 
+function PropTire.CanTire(ent)
+	if not IsValid(ent) or ent:IsPlayer() or ent:IsNPC() then return false end
+	local class = ent:GetClass()
+	if string.find(class, "prop_vehicle_", 1, true) or class == "prop_ragdoll" then return false end
+	if ent:GetMoveType() ~= MOVETYPE_VPHYSICS then return false end
+	return CLIENT or IsValid(ent:GetPhysicsObject())
+end
+
 function PropTire.CubeBox(ent)
 	local s = ent:OBBMaxs() - ent:OBBMins()
 	if math.abs(s.x - s.y) > 0.01 or math.abs(s.y - s.z) > 0.01 then return false end

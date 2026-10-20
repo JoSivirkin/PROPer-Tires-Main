@@ -42,9 +42,8 @@ end)
 
 local U = 0.0254
 local function Gravity()
-	return physenv.GetGravity():Length() * 0.0254
+	return physenv.GetGravity():Length() * U
 end
-PropTire.Gravity = Gravity
 local gTick = 9.81
 local MARGIN = 3
 local V0 = 40
@@ -1107,7 +1106,7 @@ end
 
 local function Simulate(ent, T, dt)
 	T.skid = 0
-	T.ground, T.surf, T.slip, T.alpha, T.fx, T.fy, T.mu, T.groundV = false, "", 0, 0, 0, 0, 0, 0
+	T.ground, T.surf, T.slip, T.alpha, T.mu, T.groundV = false, "", 0, 0, 0, 0
 	T.wheelV, T.hP, T.hV, T.hCool, T.fvec, T.contacts, T.curLoad = 0, 0, 0, 1, nil, 0, nil
 	T.springS = nil
 	local wPrev, dwOurs = T.wPrev, T.dwOurs or 0
@@ -1173,7 +1172,6 @@ local function Simulate(ent, T, dt)
 	local group = PropTire.SurfaceGroup(prim.mat).id
 	T.ground, T.surf, T.groundV = true, group, forvel
 	T.mu = PropTire.Friction(T.tread, prim.mat, T.pres) * grip * heatGrip
-	T.fdir, T.ldir = fP, lP
 	T.hCool = COOL_SURF[group] or 1
 
 	local k = dt / U
@@ -1266,7 +1264,6 @@ local function Simulate(ent, T, dt)
 				T.dS, T.dFx, T.dJx, T.dJmax = s, fx, jx, jxMax
 				T.slip = s
 				T.alpha = math.deg(lv > 0 and alpha or -alpha)
-				T.fx, T.fy = jx / k, jl / k
 			end
 		end
 	end
